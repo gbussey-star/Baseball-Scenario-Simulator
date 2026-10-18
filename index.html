@@ -147,6 +147,16 @@ button.pid{cursor:pointer}button.pid:hover,button.pid:focus-visible{color:var(--
 .chipbtn.on{border-color:var(--gold);color:var(--gold)}
 .chipbtn:hover,.chipbtn:focus-visible{border-color:var(--gold);outline:none}
 .set{display:flex;flex-direction:column;gap:14px}
+.menu.solo,.menu.setmenu{grid-template-columns:minmax(0,1fr);max-width:620px;gap:0}
+.menu.setmenu{max-width:760px}.setmenu .set{margin-top:14px}
+.solo .logo{font-size:clamp(28px,6vw,46px);white-space:nowrap}
+@media (max-width:480px){.gear span{display:none}.gear{padding:8px}.solo .logo{font-size:clamp(22px,7.2vw,46px)}}
+.tophead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.gear{flex:none;display:inline-flex;align-items:center;gap:6px;background:var(--board-3);border:2px solid transparent;border-radius:999px;padding:7px 14px 7px 10px;font:800 13px var(--f-ui);letter-spacing:.08em;text-transform:uppercase;color:var(--chalk);cursor:pointer;margin-top:4px}
+.gear:hover,.gear:focus-visible{border-color:var(--gold);outline:none}
+.sethead{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.sethead .logo{font-size:clamp(30px,4.6vw,46px)}
+.sumline{margin-top:16px}.linkbtn{background:none;border:0;border-bottom:1px solid currentColor;padding:0;color:var(--gold);font:inherit;cursor:pointer}
+.linkbtn:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
 .srow{display:flex;flex-direction:column;gap:6px}
 .srow .lab{font:800 11px var(--f-ui);letter-spacing:.16em;text-transform:uppercase;color:var(--dim)}
 .seg{display:flex;flex-wrap:wrap;gap:6px}
@@ -184,6 +194,10 @@ details summary{cursor:pointer;font:800 12px var(--f-ui);letter-spacing:.14em;te
 .bx .mk{font:800 12px var(--f-ui);letter-spacing:.06em}
 .bx button{margin-top:auto;align-self:flex-start;background:none;border:1px solid var(--rule);border-radius:5px;color:var(--chalk);font:700 12px var(--f-ui);padding:4px 8px;cursor:pointer}
 .bx button:hover,.bx button:focus-visible{border-color:var(--gold);outline:none}
+/* controller in use: browsers hide the focus ring after a mouse click, so draw it whenever the pad moves focus */
+body.pad #ui :is(button,summary,input,select):focus{outline:3px solid var(--gold);outline-offset:2px}
+body.pad #ui .pb:focus{outline:none}body.pad #ui .pb:focus .jersey{transform:scale(1.15);box-shadow:0 0 0 3px var(--gold)}
+body.pad #decide .ob:focus{outline:3px solid var(--gold)}
 #loading{position:absolute;inset:0;z-index:20;display:grid;place-items:center;background:var(--board);text-align:center;padding:16px}
 #loading .lg{font:400 clamp(30px,6vw,56px)/1 var(--f-disp)}
 #loading .lg span{color:var(--gold)}
@@ -300,7 +314,7 @@ import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.m
 window.__BBB_OK = true;
 
 // ---------------- math ----------------
-const VERSION = 'v5.5';
+const VERSION = 'v5.9';
 const D2R = Math.PI / 180;
 const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -323,10 +337,13 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 // ---------------- settings ----------------
 const SET_KEY = 'bbb-settings-v1';
 const TRAIN = window.BBB_TRAIN || null;   // set by Bulls Baseball when it opens this page for Training Camp
-const SETTINGS = { colors: 'bulls', talk: true, vs: false, names: ['Player 1', 'Player 2'], focus: 'all', field: 'll', speed: 0.5, clock: 0, cutoff: 'corners', hand: 'R', voice: false, view: 'full', reps: 10, landing: true, pos: 'SS', everyone: true, ft: 'cut', coach: false, order: 'random', setup: true, level: 'easy' };
+const SETTINGS = { colors: 'bulls', talk: true, vs: false, names: ['Player 1', 'Player 2'], focus: 'all', field: 'll', speed: 1, clock: 0, cutoff: 'middle', hand: 'R', voice: false, view: 'full', reps: 10, landing: true, pos: 'SS', everyone: true, ft: 'cut', coach: false, order: 'random', setup: true, level: 'easy' };
 try { Object.assign(SETTINGS, JSON.parse(localStorage.getItem(SET_KEY) || '{}')); } catch (e) { }
+// v5.7 defaults: game speed, and the middle infielders as cutoffs on Easy (applied once to saved settings)
+if (!(SETTINGS.sv >= 2)) { SETTINGS.speed = 1; if ((SETTINGS.level || 'easy') === 'easy') SETTINGS.cutoff = 'middle'; SETTINGS.sv = 2; }
 // Training camp (opened by Bulls Baseball): this player, this position, a short round, and nothing saved over the trainer's own settings
 if (TRAIN) Object.assign(SETTINGS, { field: 'll', pos: TRAIN.pos || 'SS', focus: 'all', reps: TRAIN.reps || 5, order: 'random', level: TRAIN.level || SETTINGS.level || 'easy', hand: TRAIN.player && TRAIN.player.throws === 'L' ? 'L' : 'R', vs: false, coach: false, setup: true });
+if (TRAIN && SETTINGS.level === 'easy') SETTINGS.cutoff = 'middle';
 const saveSettings = () => { if (TRAIN) return; try { localStorage.setItem(SET_KEY, JSON.stringify(SETTINGS)); } catch (e) { } };
 
 // ---------------- baseball vocabulary ----------------
@@ -764,22 +781,24 @@ for (const side of ['LF', 'CF', 'RF']) for (const on of [[], [1], [2], [1, 2]]) 
   const T = !on.length ? 2 : (on.length === 1 && on[0] === 1) ? 3 : 4;
   const Tb = T === 4 ? 0 : T;
   const corners = SETTINGS.cutoff === 'corners';
+  // A shallow right fielder (12U extra infielder, or in for a hitter with no power) with a runner on first:
+  // he gets to the ball fast, so the play is at second (or the batter at first), not third (coaches' note).
+  // The ball got through the right side, so the second baseman went after it and cannot get back:
+  // the shortstop covers second and calls it, and the second baseman stays out as the cutoff to third.
+  const rfShallow = side === 'RF' && T === 3 && C.setup && (C.setup.rf12 || sit.scout.power === 'weak');
   let relay;
   if (T === 2) relay = side === 'LF' ? 'SS' : side === 'RF' ? '2B' : (fp.x < 0 ? 'SS' : '2B');
-  else if (T === 3) relay = 'SS';
+  else if (T === 3) relay = rfShallow ? '2B' : 'SS';
   else relay = corners ? (side === 'LF' ? '3B' : '1B') : (side === 'LF' ? 'SS' : side === 'RF' ? '2B' : (fp.x < 0 ? 'SS' : '2B'));
   const tgt = G.base[Tb];
   const dd = vdist(fp, tgt);
-  const cd = T === 2 ? clamp(0.42 * dd, 0.3 * B, 0.65 * B) : T === 3 ? clamp(0.42 * dd, 0.35 * B, 0.75 * B) : Math.min(0.75 * B, 0.5 * dd);
+  const cd = T === 2 ? clamp(0.42 * dd, 0.3 * B, 0.65 * B) : rfShallow ? 0.62 * dd : T === 3 ? clamp(0.42 * dd, 0.35 * B, 0.75 * B) : Math.min(0.75 * B, 0.5 * dd);
   const cspot = C.onLine(fp, tgt, cd);
   const jobs = {}, decide = {}, calls = {}, aiCalls = [];
   let variant = null, runners = [], batter = { goal: 1 };
   const tName = BNC[Tb];
   // 12U shallow right fielder, nobody on: he is an extra infielder, so the batter at first is the play when he can get him
   const rf12 = side === 'RF' && T === 2 && C.setup && C.setup.rf12;
-  // A shallow right fielder (12U extra infielder, or in for a hitter with no power) with a runner on first:
-  // he gets to the ball fast, so the play is at second (or the batter at first), not third (coaches' note).
-  const rfShallow = side === 'RF' && T === 3 && C.setup && (C.setup.rf12 || sit.scout.power === 'weak');
   jobs[side] = J.field(rf12 ? 'You were playing shallow, like an extra infielder. Charge it, field it clean, and throw him out at first if you can get him.' : `Base hit to you. Field it cleanly and get it back to the infield.`);
   if (rf12) decide[side] = { kind: 'throw', opts: ['b1', 'b2', 'b3', 'hold'], correct: sim => (sim.outPlays(sim.F.RF).includes('b1') ? 'b1' : 'b2'), why: 'Shallow right fielder with nobody on: if you can beat the batter to first, throw to first for the out. If he is already there, get it to second through the cutoff.' };
   else if (rfShallow) decide[side] = { kind: 'throw', opts: ['b1', 'b2', 'b3', 'hold'], correct: sim => { const o = sim.outPlays(sim.F.RF); return o.includes('b2') ? 'b2' : o.includes('b1') ? 'b1' : 'b2'; }, ok: ['b1', 'b2'], why: 'You were playing shallow, so you got to it fast. The play is at second for the lead runner, or the batter at first if he is slow getting out. Do not throw behind the runner to third.' };
@@ -801,14 +820,15 @@ for (const side of ['LF', 'CF', 'RF']) for (const on of [[], [1], [2], [1, 2]]) 
     jobs['3B'] = J.cover(3, `Cover third and line up the shortstop between you and the ${PL[side]}.`, 'Cover 3B, line up the cutoff');
     if (rfShallow) {
       jobs['3B'] = J.cover(3, 'Cover third. The right fielder is in shallow, so the play should be at second.', 'Cover 3B');
-      jobs['2B'] = J.cover(2, 'The right fielder is shallow and gets to it fast: the play is at second. Get to the bag and yell “Two!”.', 'Cover 2B, call it');
-      calls['2B'] = { req: ['n2'], win: E => [Math.max(0.2, (E.field ?? 1.6) - 1.0), (E['release:RF'] ?? E.field ?? 1.6) + 0.3], why: 'Shallow right fielder, runner on first: yell “Two! Two!” so he throws to second.' };
-      aiCalls.push({ pos: '2B', id: 'n2', at: E => Math.max(0.3, (E.field ?? 1.6) - 0.5) });
+      jobs.SS = J.cover(2, 'The ball got through the right side and the second baseman went after it, so second is yours. The right fielder is shallow and gets to it fast: the play is at second. Get to the bag and yell “Two!”.', 'Cover 2B, call it');
+      calls.SS = { req: ['n2'], win: E => [Math.max(0.2, (E.field ?? 1.6) - 1.0), (E['release:RF'] ?? E.field ?? 1.6) + 0.3], why: 'Shallow right fielder, runner on first: yell “Two! Two!” so he throws to second.' };
+      aiCalls.push({ pos: 'SS', id: 'n2', at: E => Math.max(0.3, (E.field ?? 1.6) - 0.5) });
+      // no cutoff: the right fielder is shallow, close enough to throw straight to the bag
+      jobs['2B'] = J.hold(vlerp(A['2B'], G.base[1], 0.3), 'Clear the throwing lane', 'You went after the ball and it got by you, so the shortstop has second. There is no cutoff: the right fielder is close enough to throw straight to the bag. Peel back toward first, out of the throwing lane.', E => (E['release:RF'] ?? E.field ?? 1.6) + 0.2);
       calls['3B'] = { opt: ['n3'], win: E => [0, 99], why: '' };
       jobs['1B'] = J.cover(1, 'Cover first: with the right fielder shallow there can be a play on the batter.', 'Cover 1B');
       jobs.P = J.backup(C.past(G.base[2], fp, 0.5 * B), 'Back up 2B', 'The throw goes to second. Get behind the bag in line with it.', { a: fp, b: G.base[2] }, C.atBase(2));
       jobs.C = J.cover(0, 'Stay home.', 'Stay home');
-      decide.SS = { kind: 'cutoff', opts: ['thru', 'b3', 'cut_hold', 'b2'], correct: ['thru', 'b3'], ok: ['cut_hold'], why: 'If the throw comes to you, it is going to third.' };
     } else {
     calls['3B'] = { req: ['n3'], win: E => [Math.max(0.2, (E.field ?? 2) - 1.0), (E['release:' + side] ?? E.field ?? 2) + 0.4], why: 'The runner is trying for third. Yell “Three! Three!” so the outfielder and cutoff know where the play is.' };
     aiCalls.push({ pos: '3B', id: 'n3', at: E => Math.max(0.4, (E.field ?? 2) - 0.4) });
@@ -847,9 +867,9 @@ for (const side of ['LF', 'CF', 'RF']) for (const on of [[], [1], [2], [1, 2]]) 
     else if (o === 'LF') jobs[o] = J.backup(C.line3(), 'Back up 3B', 'Come in along the line behind third in case the throw gets away.', null, E => (E['release:' + side] ?? E.field ?? 2) + 0.8);
     else jobs[o] = J.backup(C.past(G.base[2], G.base[3], 0.7 * B), 'Back up 2B', 'Come in behind second for a throw from the third-base side.', { a: G.base[3], b: G.base[2] }, E => (E.field ?? 2) + 0.8);
   }
-  const relayFor = { [T]: relay };
+  const relayFor = rfShallow ? null : { [T]: relay };
   const name = `Single to ${side}${on.length ? ', ' + (on.length === 2 ? 'two on' : 'runner on ' + BN[on[0]]) : ''}`;
-  return { name, sit, A, hit, path: P, fielder: side, fp, runners, batter, jobs, decide, calls, aiCalls, relayFor, director: T === 4 ? 'C' : T === 3 ? '3B' : null, variant };
+  return { name, sit, A, hit, path: P, fielder: side, fp, runners, batter, jobs, decide, calls, aiCalls, relayFor, director: T === 4 ? 'C' : T === 3 && !rfShallow ? '3B' : null, variant };
 }, on.length === 0 ? 0.8 : 1.1);
 
 // ---- extra-base hits in the gap ----
@@ -919,7 +939,7 @@ for (const side of ['LF', 'RF']) def('line-' + side, 'Extra bases', C => {
   jobs[side] = J.field('Ball down the line. Get it and hit the relay man.');
   decide[side] = { kind: 'throw', opts: ['b2', 'b3', 'b4', 'hold'], correct: three ? 'b3' : 'b2', ok: [three ? 'b2' : 'b3'], why: three ? 'The batter is trying for third. Hit the relay man lined up with third.' : 'The batter pulled up at second. Get it back in to second through the relay.' };
   jobs[relay] = { kind: 'cutoff', spot: rspot, label: 'Relay man', why: `Go out toward the corner and line up between the ${PL[side]} and third, about halfway. The third baseman lines you up${tandem ? '; the trailer behind you calls the base' : ' and calls the base'}.`, line: { a: fp, b: tgt }, ev: E => E['release:' + side] ?? (E.field ?? 2) + 0.4 };
-  decide[relay] = { kind: 'throw', opts: ['b2', 'b3', 'b4', 'hold'], correct: three ? 'b3' : 'hold', ok: three ? [] : ['b2'], why: three ? `The ${tandem ? 'trailer' : 'third baseman'} yelled “Three!”: the batter is coming. Turn to your glove side and throw to third.` : 'The batter stopped at second and nobody called a base. Run the ball in toward the infield.' };
+  decide[relay] = { kind: 'throw', opts: ['b2', 'b3', 'b4', 'hold'], correct: three ? 'b3' : 'b2', ok: three ? [] : ['hold'], why: three ? `The ${tandem ? 'trailer' : 'third baseman'} yelled “Three!”: the batter is coming. Turn to your glove side and throw to third.` : 'The batter stopped at second and nobody called “Three!”. Throw it in to second so he stays there (running it in hard is OK too).' };
   jobs['3B'] = J.cover(3, 'Cover third and line up the relay man between you and the ball.', 'Cover 3B, line up the relay');
   if (tandem) {
     jobs[trailer] = { kind: 'cutoff', spot: tspot, label: 'Trailer: back up the relay and call the base', why: 'Trail 20 to 30 feet behind the relay man, in the same line, in case the throw gets by him. You can see the batter-runner, so you tell the relay man where to throw.', line: { a: fp, b: tgt }, ev: E => E['release:' + side] ?? (E.field ?? 2) + 0.4 };
@@ -939,7 +959,7 @@ for (const side of ['LF', 'RF']) def('line-' + side, 'Extra bases', C => {
   const o = side === 'LF' ? 'RF' : 'LF';
   jobs[o] = o === 'RF' ? J.backup(C.past(G.base[2], G.base[3], 0.6 * B), 'Back up 2B', 'Come in behind second.', { a: G.base[3], b: G.base[2] }, E => (E.field ?? 2) + 1)
     : J.backup(C.line3(), 'Back up 3B', 'Come in along the line behind third.', null, E => (E.field ?? 2) + 1);
-  return { name: `Double down the ${side === 'LF' ? 'left' : 'right'}-field line`, sit, A, hit, path: P, fielder: side, fp, runners: [], batter: { goal: three ? 3 : 2, v: three ? 1.08 : 1, commit: three }, jobs, decide, calls, aiCalls, relayFor: { 3: relay, 2: relay }, director: tandem ? trailer : '3B', listen: tandem ? [relay] : undefined, noCatch: true, variant: three ? 'The batter tried for third.' : 'The batter pulled up at second.' };
+  return { name: `Double down the ${side === 'LF' ? 'left' : 'right'}-field line`, sit, A, hit, path: P, fielder: side, fp, runners: [], batter: { goal: three ? 3 : 2, v: three ? 1.08 : 1, commit: three }, jobs, decide, calls, aiCalls, relayFor: { 3: relay, 2: relay }, relayLine: 3, director: tandem ? trailer : '3B', listen: tandem ? [relay] : undefined, noCatch: true, variant: three ? 'The batter tried for third.' : 'The batter pulled up at second.' };
 });
 
 // ---- fly ball in the gap: priority ----
@@ -1309,7 +1329,7 @@ class Sim {
   call(id) { if (!this.me || this.done) return; this.say(this.me, id); }
   glove(f) { const fw = v2(Math.cos(f.face), Math.sin(f.face)), l = vleft(fw); const sd = SETTINGS.hand === 'R' ? 1 : -1; return { x: f.p.x + fw.x * 1.1 + l.x * 0.7 * sd, y: f.p.y + fw.y * 1.1 + l.y * 0.7 * sd, z: 3.3 }; }
   isMe(pos) { return pos === this.me && !this.auto; }
-  isOF(f) { return vlen(f.p) > 1.45 * this.G.B; }
+  isOF(f) { return f.pos === 'LF' || f.pos === 'CF' || f.pos === 'RF' || vlen(f.p) > 1.45 * this.G.B; }
   correctOf(d) { let c = typeof d.correct === 'function' ? d.correct(this) : d.correct; return Array.isArray(c) ? c : [c]; }
 
   step(dt) {
@@ -1459,6 +1479,7 @@ class Sim {
     if (b.st === 'thr') {
       const T = b.thr, u = clamp((t - T.t0) / T.dur, 0, 1), p = vlerp(T.a, T.b, u);
       b.p = { x: p.x, y: p.y, z: lerp(T.za, T.zb, u) + T.arc * Math.sin(Math.PI * u) };
+      if (T.cut && !T.cutDone && this.cutStep(T, u)) return;
       if (T.rcv && this.isMe(T.rcv) && !T.asked && s.decide[this.me]?.kind === 'cutoff' && u > 0.72) { T.asked = true; this.openDecision('cutoff'); return; }
       if (u >= 1) this.throwArrive();
       return;
@@ -1681,16 +1702,25 @@ class Sim {
     if (f.pos === 'C' && n === 0 && vdist(f.p, bp) < 6) { this.arriveBase(0); return; }
     if (vdist(f.p, bp) < 9 * Math.sqrt(G.k)) { f.queue = [{ carry: n }]; this.nextQ(f); return; }
     const rl = this.s.relayFor?.[n === 0 ? 4 : n];
-    if (rl && rl !== f.pos && (this.isOF(f) || this.s.relayAny)) {
+    let cutBy = null;
+    if (rl && rl !== f.pos && (this.isOF(f) || this.s.relayAny) && this.s.decide[rl]?.kind === 'cutoff') {
+      // A cutoff man: the throw is aimed at the base, and he cuts it only if he is lined up where it passes (cutStep).
+      // A teammate's throw waits a moment for a cutoff who is still getting there, as a real outfielder would hit him on the run.
+      const R = this.F[rl];
+      if (!this.isMe(f.pos) && !this.isMe(rl) && !R.ball && R.job.spot && vdist(R.p, R.job.spot) > 0.1 * G.B) { f.cutWait ??= this.t; if (this.t - f.cutWait < 1.6) { f.act = { opt: 'b' + (n === 0 ? 4 : n), at: this.t + 0.06 }; return; } }
+      f.cutWait = null; cutBy = rl;
+    } else if (rl && rl !== f.pos && (this.isOF(f) || this.s.relayAny)) {
       const R = this.F[rl], mine = this.isMe(rl);
       // you: the throw goes to where you are if you are lined up. Teammates: to the spot they are running to.
-      const sd = segDist(R.p, f.p, bp);
-      if (mine && !R.ball && sd.d < 0.3 * G.B && sd.t > 0.12 && sd.t < 0.92) { f.waitT = null; this.throwTo(f, R.p, { rcv: rl, forBase: n }); return; }
-      const js = mine ? null : R.job.spot, sj = js ? segDist(js, f.p, bp) : null;
+      // the relay man stays lined up with the base he set up for (s.relayLine), even when the throw is going to another base
+      const lb = this.s.relayLine != null ? G.base[this.s.relayLine] : bp;
+      const sd = segDist(R.p, f.p, lb);
+      if (!R.ball && sd.d < 0.3 * G.B && sd.t > 0.12 && sd.t < 0.92 && (mine || vdist(R.p, R.job.spot || R.p) < 0.25 * G.B)) { f.waitT = null; this.throwTo(f, R.p, { rcv: rl, forBase: n }); return; }
+      const js = mine ? null : R.job.spot, sj = js ? segDist(js, f.p, lb) : null;
       if (!R.ball && sj && sj.d < 0.3 * G.B && sj.t > 0.12 && sj.t < 0.92) {
         const tReach = vdist(R.p, js) / (rl === this.me ? G.vP : G.vF), tThrow = vdist(f.p, js) / G.vT;
         if (tReach <= tThrow + 0.3) { f.waitT = null; this.throwTo(f, js, { rcv: rl, forBase: n }); return; }
-        if (!this.isMe(f.pos) && !this.isMe(rl)) { f.waitT ??= this.t; if (this.t - f.waitT < 0.8) { f.act = { opt: 'b' + (n === 0 ? 4 : n), at: this.t + 0.06 }; return; } }
+        if (!this.isMe(f.pos) && !this.isMe(rl)) { f.waitT ??= this.t; if (this.t - f.waitT < 1.6) { f.act = { opt: 'b' + (n === 0 ? 4 : n), at: this.t + 0.06 }; return; } }
       }
       if (this.isMe(rl)) this.res.notes.push('cutoffMissing');
     }
@@ -1702,20 +1732,42 @@ class Sim {
       f.waitT ??= this.t;
       if (eta > fly + 0.12 && this.t - f.waitT < 1.3) { f.act = { opt: 'b' + (n === 0 ? 4 : n), at: this.t + 0.06 }; return; }
       f.waitT = null;
-      this.throwTo(f, eta > fly + 0.12 ? bp : spot, { rcv: assigned.pos, base: n });
+      this.throwTo(f, eta > fly + 0.12 ? bp : spot, { rcv: assigned.pos, base: n, cut: cutBy });
       return;
     }
     f.waitT = null;
     const tgt = cov && vdist(cov.p, bp) < 7 ? cov.p : bp;
-    this.throwTo(f, tgt, { rcv: cov ? cov.pos : null, base: n });
+    this.throwTo(f, tgt, { rcv: cov ? cov.pos : null, base: n, cut: cutBy });
   }
   throwTo(f, pt, o) {
     const b = this.ball, a = this.glove(f), d = vdist(a, pt), sp = this.G.vT * (this.isOF(f) ? 0.95 : 1), dur = Math.max(0.22, d / sp);
     b.st = 'thr'; b.h = null; f.ball = false; f.act = null; f.forBase = null;
-    b.thr = { a: v2(a.x, a.y), b: vcp(pt), t0: this.t, dur, za: 3.4, zb: 3.2, arc: Math.min(9, d * 0.035), rcv: o.rcv || null, base: o.base ?? null, forBase: o.forBase ?? null, from: f.pos };
+    b.thr = { a: v2(a.x, a.y), b: vcp(pt), t0: this.t, dur, za: 3.4, zb: 3.2, arc: Math.min(9, d * 0.035), rcv: o.rcv || null, base: o.base ?? null, forBase: o.forBase ?? null, from: f.pos, cut: o.cut || null };
     this.E['release:' + f.pos] ??= this.t; this.E.rel1 ??= this.t;
     this.throws.push({ from: f.pos, a: v2(a.x, a.y), b: vcp(pt), t: this.t, rcv: o.rcv, base: o.base ?? o.forBase ?? null });
     if (o.base != null) for (const r of this.R) if (r.hang && !r.ret && r.from === (o.base === 0 ? 4 : o.base)) { r.ret = true; r.retAt = this.t; }
+  }
+  // The cutoff man on a throw aimed at a base. If he is lined up where the ball passes (within a step and a reach), he
+  // decides: let it go through, or cut it and hold or throw. If he is out of position it sails past him to the base.
+  cutStep(T, u) {
+    const R = this.F[T.cut], G = this.G, me = this.isMe(R.pos);
+    if (R.ball) { T.cutDone = true; return false; }
+    const sd = segDist(R.p, T.a, T.b), rc = 5.5 * Math.pow(G.k, 0.3), ok = sd.d < rc && sd.t > 0.06 && sd.t < 0.95;
+    if (me && ok && !T.asked && u >= sd.t - 0.18) { T.asked = true; this.openDecision('cutoff'); return true; }
+    if (u < Math.min(sd.t, 0.95)) return false;
+    T.cutDone = true;
+    if (!ok) { if (me) this.res.notes.push('cutoffMissing'); this.cutLog = { pos: R.pos, inPos: false, d: +sd.d.toFixed(1) }; return false; }
+    let opt;
+    if (me) { opt = this.pendingCut || 'cut_hold'; this.pendingCut = null; }
+    else { R.forBase = T.base; const c = this.aiChoose(R); opt = c.opt; R.forBase = null; }
+    R.decUsed = true; this.cutLog = { pos: R.pos, inPos: true, opt };
+    if (opt === 'thru') return false;
+    // cut it: he catches it where he stands
+    const b = this.ball; b.st = 'held'; b.h = R.pos; b.thr = null; R.ball = true; R.forBase = T.base; R.chase = false;
+    this.E['catch:' + R.pos] ??= this.t;
+    this.throws.push({ from: T.from, a: T.a, b: vcp(R.p), t: this.t, rcv: R.pos, base: null, cutAt: true });
+    R.act = { opt: opt === 'cut_hold' ? 'hold' : opt, at: this.t + 0.25 };
+    return true;
   }
   passThrough(T) {
     const b = this.ball, n = T.forBase, G = this.G; const a = v2(b.p.x, b.p.y), cov = this.coverer(n, null), pt = cov && vdist(cov.p, G.base[n]) < 7 ? cov.p : G.base[n];
@@ -1873,7 +1925,8 @@ function scoreRep(sim, dry) {
     const v = ch === 'timeout' ? 0 : corr.includes(ch) || outHere ? 1 : (d.ok || []).includes(ch) ? 0.5 : 0;
     if (v < 1 && (sim.res.outPlays || []).length) notes.push(`You had an out at ${(sim.res.outPlays || []).map(o => optLabel(o)).join(' or ')} on that throw.`);
     parts.push({ id: 'throw', w: 25, v, label: outHere ? `${cap(optLabel(ch))}. The out was there and you took it (the textbook throw was ${optLabel(corr[0])})` : v === 1 ? cap(optLabel(ch)) : v === 0.5 ? `${cap(optLabel(ch))}. OK, but ${optLabel(corr[0])} was better` : `${cap(optLabel(ch))}. The play was ${optLabel(corr[0])}`, why: d.why, corr: corr[0], ch });
-  } else if (d && !sim.res.decided && job.kind === 'cutoff') notes.push('The throw never came to you because you were not lined up, so it had to go all the way to the base.');
+  } else if (d && !sim.res.decided && job.kind === 'cutoff' && d.kind === 'cutoff') parts.push({ id: 'throw', w: 25, v: 0, label: 'Not lined up: the throw went past you to the base, so you could not cut it or let it through', why: 'The outfielder throws to the base. The cutoff man has to be on that line, a step off the ball\'s path, to cut it.', corr: sim.correctOf(d)[0], ch: 'none' });
+  else if (d && !sim.res.decided && job.kind === 'cutoff') notes.push('The throw never came to you because you were not lined up, so it had to go all the way to the base.');
   // calls
   const cs = s.calls[me];
   const mine = sim.calls.filter(c => c.pos === me);
@@ -4806,9 +4859,11 @@ function pollPad() {
   let x = gp.axes[0] || 0, y = -(gp.axes[1] || 0); const m = Math.hypot(x, y);
   if (m < 0.2) { x = 0; y = 0; } else { const n = Math.min(1, (m - 0.2) / 0.75); x = x / m * n; y = y / m * n; }
   PAD.lx = x; PAD.ly = y;
+  if (Math.hypot(x, y) > 0.3 || Object.values(PAD.b).some(Boolean)) document.body.classList.add('pad');
   if (Math.hypot(x, y) > 0.3 || Object.values(PAD.b).some(Boolean)) COACH.lastInput = performance.now();
 }
 const pp = k => PAD.on && PAD.b[k] && !PAD.p[k];
+for (const ev of ['pointerdown', 'keydown']) addEventListener(ev, () => document.body.classList.remove('pad'), true);
 const TOUCH = { id: null, ox: 0, oy: 0, x: 0, y: 0, used: false };
 // mouse: click (or hold and drag) on the field and your fielder runs to that spot
 const MOUSE = { target: null, down: false, id: null, used: false };
@@ -5896,7 +5951,7 @@ function showCamp() {
    <div class="who">${campFace()}<div><b style="font:400 26px var(--f-disp)">${esc(p.name || 'Your player')}</b><div class="hint">${PNAME[pos]} · throws ${SETTINGS.hand === 'L' ? 'left' : 'right'}-handed · ${n} plays at ${({ easy: 'Easy', medium: 'Medium', hard: 'Hard' })[SETTINGS.level] || 'Easy'} level</div></div></div>
    <p class="hint">Play ${n} situations at ${PL[pos]}. Your camp score is the average of your first tries; “Try it again” is there to learn and does not change the score. Earn a medal and ${TRAIN.unit ? `the ${esc(homeTeam().name)} get ${esc(TRAIN.unit)} to train any player` : `${esc((p.name || 'your player').split(' ')[0])} gets upgrade points`} for the season.</p>
    ${tiersHtml(null)}
-   <div class="srow"><span class="lab">Play speed</span>${seg('speed', [[0.35, 'Slow', '0.35×'], [0.5, 'Learning', '0.5×'], [0.75, 'Brisk', '0.75×'], [1, 'Game', '1×']])}</div>
+   <div class="srow"><span class="lab">Play speed</span>${seg('speed', [[1, 'Game', '1×'], [0.75, 'Brisk', '0.75×'], [0.5, 'Learning', '0.5×'], [0.35, 'Slow', '0.35×']])}</div>
    <div class="startrow"><button class="btn" id="campGo">${PAD.on ? '<span class="pg a">A</span>' : ''}Start camp</button><button class="btn ghost" id="campBack">Back to Bulls Baseball</button></div>
    <details><summary>Controls</summary><p class="hint">Move: WASD or arrows, the left stick, or click the field. Before the pitch, ↑ ↓ ← → take one step. Space pitches. Calls: Space “I got it”, T “Take it”, I “In”, B “Back”, G “Going”, X “Cut”, 1-4 base numbers. Fielding: S square up, F forehand, B backhand, H barehand. Throws: 1-4 (4 is home), H hold it, L let it through.</p></details></div>`;
   ui.querySelectorAll('[data-k]').forEach(b => b.onclick = () => { SETTINGS[b.dataset.k] = +b.dataset.v; showCamp(); });
@@ -5925,18 +5980,21 @@ function showCampResult() {
 // ---- title ----
 const PICK ={ C: [230, 352], P: [230, 262], '1B': [304, 240], '2B': [274, 182], SS: [186, 182], '3B': [156, 240], LF: [112, 112], CF: [230, 70], RF: [348, 112] };
 function pickerXY(p) { const [x, y] = PICK[p]; return [x / 460 * 100, y / 380 * 100]; }
+// The start screen is short: pick a position and play. Everything else lives on the Settings screen.
 function showTitle() {
   if (TRAIN) return showCamp();
+  if (APP.titleView === 'settings') return showSettings();
   soundFor('title');
   APP.mode = 'title'; $('hud').hidden = true; $('review').hidden = true; $('decide').hidden = true; clearDrawings();
   for (const k in APP.tags) APP.tags[k].style.display = 'none';
   const ui = $('ui'); ui.hidden = false;
-  const seg = (key, vals) => `<div class="seg" role="radiogroup">${vals.map(([v, l, s]) => `<button data-k="${key}" data-v="${v}" class="${String(SETTINGS[key]) === String(v) ? 'on' : ''}" role="radio" aria-checked="${String(SETTINGS[key]) === String(v)}">${l}${s ? `<small>${s}</small>` : ''}</button>`).join('')}</div>`;
-  const vs = voiceStatusText();
   const nBadges = ACH.filter(a => PROG.badges[a.id]).length;
-  const padTxt = padsBlocked() ?'Controllers can’t be read inside the Claude viewer. Download the file and open it in Chrome or Edge to use one. The keyboard works here.' : PAD.on ? `Controller ready: ${esc(PAD.id.replace(/\s*\(.*$/, '').slice(0, 40))}` : 'No controller yet. Plug one in and press a button. Browsers only reveal a controller after a button press.';
-  ui.innerHTML = `<div class="menu">
-   <div><h1 class="logo">Ball · Base · <span>Backup</span></h1><div class="ver">${VERSION}</div><button class="trophybtn" id="tTrophy">${medalSvg('star', nBadges > 0)}Trophy case · ${nBadges}/${ACH.length}</button>
+  const lvl = { easy: 'Easy', medium: 'Medium', hard: 'Hard' }[SETTINGS.level] || 'Easy';
+  const spd = { 0.35: 'slow', 0.5: 'learning speed', 0.75: 'brisk', 1: 'game speed' }[SETTINGS.speed] || 'game speed';
+  const sumTxt = `${FIELDS[SETTINGS.field]?.name || 'Little League'} · ${lvl} · ${spd} · ${teamOf(SETTINGS.colors).name}`;
+  ui.innerHTML = `<div class="menu solo">
+   <div class="tophead"><div><h1 class="logo">Ball · Base · <span>Backup</span></h1><div class="ver">${VERSION}</div><button class="trophybtn" id="tTrophy">${medalSvg('star', nBadges > 0)}Trophy case · ${nBadges}/${ACH.length}</button></div>
+    <button class="gear" id="tSet" aria-label="Settings"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.6 7.6 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.6 7.6 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.5 7.5 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.6 7.6 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.6 7.6 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg><span>Settings</span></button></div>
     <p class="tagline">On every pitch, each fielder fields the ball, covers a base, or backs up. Pick a position and learn where to be.</p>
     <div class="pick" id="pick"><svg viewBox="0 0 460 380" aria-hidden="true">
       <path d="M230 326 L18 114 A 300 300 0 0 1 442 114 Z" fill="#3f7d38"/><path d="M230 326 L18 114 A 300 300 0 0 1 442 114 Z" fill="none" stroke="#f5f3ea" stroke-width="2"/>
@@ -5946,22 +6004,64 @@ function showTitle() {
     </div>
     <div class="startrow"><button class="btn" id="goBtn">Play ball</button><button class="chipbtn ${SETTINGS.pos === 'MIX' ? 'on' : ''}" data-p="MIX">Mixed positions</button><span class="hint">${PAD.on ? 'Press A to start.' : 'Press Enter to start.'} ${esc(sessionHint())}</span></div>
     <div class="srow" style="margin-top:14px"><span class="lab">Players</span><div class="seg"><button data-k="vs" data-v="false" class="${!SETTINGS.vs ? 'on' : ''}">1 player<small>your scorebook and badges</small></button><button data-k="vs" data-v="true" class="${SETTINGS.vs ? 'on' : ''}">Vs · 2 players<small>take turns on the same plays</small></button></div>${SETTINGS.vs ? `<div class="vsn"><input id="vsN1" maxlength="16" value="${esc(SETTINGS.names[0] || 'Player 1')}" aria-label="Player 1 name"><span class="hint">vs</span><input id="vsN2" maxlength="16" value="${esc(SETTINGS.names[1] || 'Player 2')}" aria-label="Player 2 name"></div>` : ''}</div>
-    <div class="srow" style="margin-top:12px"><span class="lab">Replay a play by ID</span><div class="vsn"><input id="refIn" placeholder="gb1-SS/48213@2B" style="width:210px" aria-label="Play ID"><button class="chipbtn" id="refGo">Load</button><span class="hint" id="refMsg">Every play shows its ID. Quote it in feedback.</span></div></div>
     <div class="srow drills"><span class="lab">Drill</span><div class="seg">${Object.entries(FOCUS).map(([k, f]) => `<button data-k="focus" data-v="${k}" class="${SETTINGS.focus === k ? 'on' : ''}">${f.label}<small>${f.sub}</small></button>`).join('')}</div></div>
-   </div>
+    <div class="srow" style="margin-top:12px"><span class="lab">Replay a play by ID</span><div class="vsn"><input id="refIn" placeholder="gb1-SS/48213@2B" style="width:210px" aria-label="Play ID"><button class="chipbtn" id="refGo">Load</button><span class="hint" id="refMsg">Every play shows its ID. Quote it in feedback.</span></div></div>
+    <p class="hint sumline">${esc(sumTxt)} · <button class="linkbtn" id="tSet2">change in Settings</button></p>
+   </div>`;
+  ui.scrollTop = 0;
+  ui.querySelectorAll('[data-p]').forEach(b => b.onclick = () => { SETTINGS.pos = b.dataset.p; saveSettings(); titleRedraw(`[data-p="${b.dataset.p}"]`); });
+  bindSeg(ui);
+  for (const i of [0, 1]) { const inp = $('vsN' + (i + 1)); if (inp) inp.onchange = () => { SETTINGS.names[i] = inp.value.trim().slice(0, 16) || `Player ${i + 1}`; saveSettings(); }; }
+  const goRef = () => { if (!loadRef($('refIn').value)) $('refMsg').textContent = 'That ID was not recognized. It looks like gb1-SS/48213@2B.'; };
+  $('refGo').onclick = goRef; $('refIn').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); goRef(); } };
+  $('goBtn').onclick = startSession;
+  $('tTrophy').onclick = () => showTrophies('title');
+  $('tSet').onclick = $('tSet2').onclick = () => { APP.titleView = 'settings'; showSettings(); };
+  if (PAD.on && !ui.contains(document.activeElement)) $('goBtn').focus({ preventScroll: true });
+  CAM.want = fit(fullBounds(), { t: 0, b: 0, l: 0, r: 0 });
+}
+// redraw the title or settings screen in place, keeping the scroll and the focused control
+function titleRedraw(sel) {
+  const ae = document.activeElement, key = sel || (ae && ae.dataset && (ae.dataset.k ? `[data-k="${ae.dataset.k}"][data-v="${ae.dataset.v}"]` : ae.dataset.snd ? `[data-snd="${ae.dataset.snd}"]` : ae.id ? '#' + ae.id : null));
+  const y = $('ui').scrollTop; showTitle(); $('ui').scrollTop = y;
+  if (key) { const e = $('ui').querySelector(key); if (e) e.focus({ preventScroll: true }); }
+}
+function bindSeg(ui) {
+  ui.querySelectorAll('.seg button[data-k]').forEach(b => b.onclick = () => {
+    const k = b.dataset.k; let v = b.dataset.v;
+    if (k === 'speed' || k === 'clock') v = +v; if (k === 'coach' || k === 'setup' || k === 'talk' || k === 'vs') v = v === 'true';
+    SETTINGS[k] = v;
+    if (k === 'level') SETTINGS.cutoff = v === 'easy' ? 'middle' : 'corners';   // small fields use the middle infielders as cutoffs
+    saveSettings();
+    if (k === 'field') { G = makeGeo(SETTINGS.field); buildField(); CAM.want = fit(fullBounds(), { t: 0, b: 0, l: 0, r: 0 }); camStep(0, true); }
+    // the clicked button is redrawn, so focus the new copy (the talk toggle flips its own value)
+    titleRedraw(k === 'talk' ? `[data-k="talk"]` : `[data-k="${k}"][data-v="${b.dataset.v}"]`);
+  });
+}
+function showSettings() {
+  soundFor('title');
+  APP.mode = 'title'; APP.titleView = 'settings'; $('hud').hidden = true; $('review').hidden = true; $('decide').hidden = true; clearDrawings();
+  for (const k in APP.tags) APP.tags[k].style.display = 'none';
+  const ui = $('ui'); ui.hidden = false;
+  const seg = (key, vals) => `<div class="seg" role="radiogroup">${vals.map(([v, l, s]) => `<button data-k="${key}" data-v="${v}" class="${String(SETTINGS[key]) === String(v) ? 'on' : ''}" role="radio" aria-checked="${String(SETTINGS[key]) === String(v)}">${l}${s ? `<small>${s}</small>` : ''}</button>`).join('')}</div>`;
+  const vs = voiceStatusText();
+  const padTxt = padsBlocked() ? 'Controllers can’t be read inside the Claude viewer. Download the file and open it in Chrome or Edge to use one. The keyboard works here.' : PAD.on ? `Controller ready: ${esc(PAD.id.replace(/\s*\(.*$/, '').slice(0, 40))}` : 'No controller yet. Plug one in and press a button. Browsers only reveal a controller after a button press.';
+  const ti = SCHEMES.findIndex(x => x[0] === SETTINGS.colors), tm = teamOf(SETTINGS.colors);
+  ui.innerHTML = `<div class="menu setmenu">
+   <div class="sethead"><button class="chipbtn" id="sBack">‹ Back</button><h2 class="logo">Settings</h2><span class="hint">${PAD.on ? 'B goes back.' : 'Esc goes back.'}</span></div>
    <div class="set">
-    <div class="srow"><span class="lab">Uniforms</span><div class="seg"><select id="colSel" class="sel" aria-label="Uniform colors">${SCHEMES.map(([id, nm, c1, c2]) => `<option value="${id}" ${SETTINGS.colors === id ? 'selected' : ''}>${esc(nm)}</option>`).join('')}</select><span class="swatch" style="background:${teamOf(SETTINGS.colors).c1}"></span><span class="swatch" style="background:${teamOf(SETTINGS.colors).c2}"></span></div></div>
-    <div class="srow"><span class="lab">Sound</span><div class="seg"><button data-snd="sound" class="${BL.SETTINGS.sound ? 'on' : ''}">Sound ${BL.SETTINGS.sound ? 'on' : 'off'}<small>bat, glove, crowd</small></button><button data-snd="music" class="${BL.SETTINGS.musicVol > 0 ? 'on' : ''}">Music ${BL.SETTINGS.musicVol > 0 ? 'on' : 'off'}<small>ballpark organ</small></button><button data-k="talk" data-v="${!SETTINGS.talk}" class="${SETTINGS.talk ? 'on' : ''}">Calls out loud ${SETTINGS.talk ? 'on' : 'off'}<small>teammates say their calls</small></button></div></div>
     <div class="srow"><span class="lab">Field</span>${seg('field', Object.values(FIELDS).map(f => [f.id, f.name, f.sub]))}</div>
-    <div class="srow"><span class="lab">Level</span>${seg('level', [['easy', 'Easy', '12U · one relay man'], ['medium', 'Medium', '13–14U · more setups'], ['hard', 'Hard', 'HS · trailer, all 1st & 3rd']])}<p class="hint">${{ easy: 'Easy: one relay man (the other middle infielder covers second), basic setups: normal, double-play depth, infield in, corners in, pull hitters, deep or shallow outfield, and the 12U shallow right fielder.', medium: 'Medium adds halfway, runner speed, early or late swings, no-doubles, and the outfield in for the winning run.', hard: 'Hard adds a trailer behind the relay man who calls the base, and the throw-through and back-to-the-pitcher first-and-third looks.' }[SETTINGS.level || 'easy']}</p></div>
-    <div class="srow"><span class="lab">Play speed</span>${seg('speed', [[0.35, 'Slow', '0.35×'], [0.5, 'Learning', '0.5×'], [0.75, 'Brisk', '0.75×'], [1, 'Game', '1×']])}</div>
+    <div class="srow"><span class="lab">Level</span>${seg('level', [['easy', 'Easy', '12U · one relay man'], ['medium', 'Medium', '13–14U · more setups'], ['hard', 'Hard', 'HS · trailer, all 1st & 3rd']])}<p class="hint">${{ easy: 'Easy: one relay man (the other middle infielder covers second), the middle infielders as cutoffs, and basic setups: normal, double-play depth, infield in, corners in, pull hitters, deep or shallow outfield, and the 12U shallow right fielder.', medium: 'Medium adds halfway, runner speed, early or late swings, no-doubles, and the outfield in for the winning run.', hard: 'Hard adds a trailer behind the relay man who calls the base, and the throw-through and back-to-the-pitcher first-and-third looks.' }[SETTINGS.level || 'easy']}</p></div>
+    <div class="srow"><span class="lab">Play speed</span>${seg('speed', [[1, 'Game', '1×'], [0.75, 'Brisk', '0.75×'], [0.5, 'Learning', '0.5×'], [0.35, 'Slow', '0.35×']])}</div>
+    <div class="srow"><span class="lab">Cutoff on throws home</span>${seg('cutoff', [['middle', 'Middle infielders', 'SS and 2B (small-field version)'], ['corners', 'Corner infielders', '3B from left, 1B from center and right']])}</div>
     <div class="srow"><span class="lab">Pre-pitch setup</span>${seg('setup', [['true', 'On', 'move to your starting spot before every pitch'], ['false', 'Off', 'start already in position']])}</div>
     <div class="srow"><span class="lab">Decision clock</span>${seg('clock', [[0, 'Off', 'think it through'], [5, '5 seconds', ''], [3, '3 seconds', '']])}</div>
-    <div class="srow"><span class="lab">Cutoff on throws home</span>${seg('cutoff', [['corners', 'Corner infielders', '3B from left, 1B from center and right'], ['middle', 'Middle infielders', 'SS and 2B (small-field version)']])}</div>
     <div class="srow"><span class="lab">Your fielder throws</span>${seg('hand', [['R', 'Right-handed', 'glove on the left'], ['L', 'Left-handed', 'glove on the right']])}</div>
+    <div class="srow"><span class="lab">Uniforms</span><div class="seg"><button id="colPrev" aria-label="Previous uniform">‹</button><button id="colNext" class="on" aria-label="Next uniform: now ${esc(tm.name)}">${esc(tm.name)}<small>${ti + 1} of ${SCHEMES.length} · press to change</small></button><span class="swatch" style="background:${tm.c1}"></span><span class="swatch" style="background:${tm.c2}"></span></div></div>
+    <div class="srow"><span class="lab">Sound</span><div class="seg"><button data-snd="sound" class="${BL.SETTINGS.sound ? 'on' : ''}">Sound ${BL.SETTINGS.sound ? 'on' : 'off'}<small>bat, glove, crowd</small></button><button data-snd="music" class="${BL.SETTINGS.musicVol > 0 ? 'on' : ''}">Music ${BL.SETTINGS.musicVol > 0 ? 'on' : 'off'}<small>ballpark organ</small></button><button data-k="talk" data-v="${!SETTINGS.talk}" class="${SETTINGS.talk ? 'on' : ''}">Calls out loud ${SETTINGS.talk ? 'on' : 'off'}<small>teammates say their calls</small></button></div></div>
     <div class="srow"><span class="lab">Voice calls</span><div class="seg"><button id="vBtn" class="${VOICE.state === 'on' ? 'on' : ''}">${VOICE.state === 'on' ? 'Listening' : 'Turn on the microphone'}</button></div><div class="status"><span class="dot ${vs.cls}"></span><span>${esc(vs.t)}</span></div></div>
-    <div class="srow"><span class="lab">Coach feedback</span>${seg('coach', [['false', 'Off', ''], ['true', 'Record my voice', 'audio + play log']])}${seg('order', [['random', 'Random plays', SETTINGS.reps + ' per round'], ['all', 'Every situation', 'in order, one each']])}<div class="status"><span class="dot ${COACH.state === 'rec' ? 'ok' : SETTINGS.coach ? '' : ''}"></span><span>${COACH.state !== 'off' ? `Recording is running (${fmtT(recT())}, ${COACH.log.plays.length} plays). Save it from the menu or the scorebook.` : `For experts: play and talk through what each player should do. The page records your voice plus a log of every play (where you moved, what you chose, what the game expected), with pins you drop on the field and a transcript. Save at the end and send both files back here. It checks in every ${COACH_CHECK_MIN} minutes (or after ${COACH_IDLE_MIN} idle), saves and stops if nobody answers, and always stops at ${COACH_MAX_MIN} minutes.`}${FROM_FILE && SETTINGS.coach ? ' ' + LOCAL_TIP : ''}</span></div>${COACH.state !== 'off' ? '<div class="seg"><button id="tSave">Save feedback now</button></div>' : ''}</div>
     <div class="srow"><span class="lab">Controller</span><div class="status"><span class="dot ${PAD.on ? 'ok' : padsBlocked() ? 'no' : ''}"></span><span>${padTxt}</span></div></div>
+    <div class="srow"><span class="lab">Coach feedback</span>${seg('coach', [['false', 'Off', ''], ['true', 'Record my voice', 'audio + play log']])}${seg('order', [['random', 'Random plays', SETTINGS.reps + ' per round'], ['all', 'Every situation', 'in order, one each']])}<div class="status"><span class="dot ${COACH.state === 'rec' ? 'ok' : ''}"></span><span>${COACH.state !== 'off' ? `Recording is running (${fmtT(recT())}, ${COACH.log.plays.length} plays). Save it from the menu or the scorebook.` : `For experts: play and talk through what each player should do. The page records your voice plus a log of every play (where you moved, what you chose, what the game expected), with pins you drop on the field and a transcript. Save at the end and send both files back here. It checks in every ${COACH_CHECK_MIN} minutes (or after ${COACH_IDLE_MIN} idle), saves and stops if nobody answers, and always stops at ${COACH_MAX_MIN} minutes.`}${FROM_FILE && SETTINGS.coach ? ' ' + LOCAL_TIP : ''}</span></div>${COACH.state !== 'off' ? '<div class="seg"><button id="tSave">Save feedback now</button></div>' : ''}</div>
     <details><summary>Controls</summary><table class="ctl"><tbody>
      <tr><td>Move</td><td>WASD or arrow keys · left stick · click (or hold) on the field and your fielder runs there</td></tr>
      <tr><td>Set up</td><td>Before the pitch: ↑ a step back, ↓ a step in, ← → a step toward third or first (D-pad on a controller), or click the spot</td></tr>
@@ -5972,22 +6072,21 @@ function showTitle() {
      <tr><td>Fielding</td><td>S square up · F forehand · B backhand · H barehand</td></tr>
      <tr><td>Camera</td><td>Z or right-stick click switches between full field and follow</td></tr>
      <tr><td>Pause</td><td>Esc · Start</td></tr>
+     <tr><td>Menus</td><td>D-pad or left stick moves · A picks · B goes back</td></tr>
      <tr><td>Coach mode</td><td>M or Back/Select flags a moment · click the field in a review to drop pins</td></tr></tbody></table></details>
    </div></div>`;
   ui.scrollTop = 0;
-  ui.querySelectorAll('[data-p]').forEach(b => b.onclick = () => { SETTINGS.pos = b.dataset.p; saveSettings(); const y = ui.scrollTop; showTitle(); $('ui').scrollTop = y; });
+  bindSeg(ui);
   if ($('tSave')) $('tSave').onclick = () => coachSave(false);
-  ui.querySelectorAll('.seg button[data-k]').forEach(b => b.onclick = () => { const k = b.dataset.k; let v = b.dataset.v; if (k === 'speed' || k === 'clock') v = +v; if (k === 'coach' || k === 'setup' || k === 'talk' || k === 'vs') v = v === 'true'; SETTINGS[k] = v; saveSettings(); if (k === 'field') { G = makeGeo(SETTINGS.field); buildField(); CAM.want = fit(fullBounds(), { t: 0, b: 0, l: 0, r: 0 }); camStep(0, true); } const y = $('ui').scrollTop; showTitle(); $('ui').scrollTop = y; });
-  $('vBtn').onclick = () => { voiceToggle(); setTimeout(showTitle, 600); };
-  for (const i of [0, 1]) { const inp = $('vsN' + (i + 1)); if (inp) inp.onchange = () => { SETTINGS.names[i] = inp.value.trim().slice(0, 16) || `Player ${i + 1}`; saveSettings(); }; }
-  const goRef = () => { if (!loadRef($('refIn').value)) $('refMsg').textContent = 'That ID was not recognized. It looks like gb1-SS/48213@2B.'; };
-  $('refGo').onclick = goRef; $('refIn').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); goRef(); } };
-  $('colSel').onchange = e => { SETTINGS.colors = e.target.value; saveSettings(); const y = $('ui').scrollTop; showTitle(); $('ui').scrollTop = y; };
-  ui.querySelectorAll('[data-snd]').forEach(b => b.onclick = () => { const S = BL.SETTINGS; if (b.dataset.snd === 'sound') S.sound = !S.sound; else S.musicVol = S.musicVol > 0 ? 0 : 0.6; BL.saveSettings(); BL.audio(); BL.audioEvent('volume'); const y = $('ui').scrollTop; showTitle(); $('ui').scrollTop = y; });
-  $('goBtn').onclick = startSession;
-  $('tTrophy').onclick = () => showTrophies('title');
+  $('vBtn').onclick = () => { voiceToggle(); setTimeout(() => titleRedraw('#vBtn'), 600); };
+  const col = d => { const n = SCHEMES.length, i = (SCHEMES.findIndex(x => x[0] === SETTINGS.colors) + d + n) % n; SETTINGS.colors = SCHEMES[i][0]; saveSettings(); titleRedraw(d < 0 ? '#colPrev' : '#colNext'); };
+  $('colPrev').onclick = () => col(-1); $('colNext').onclick = () => col(1);
+  ui.querySelectorAll('[data-snd]').forEach(b => b.onclick = () => { const S = BL.SETTINGS; if (b.dataset.snd === 'sound') S.sound = !S.sound; else S.musicVol = S.musicVol > 0 ? 0 : 0.6; BL.saveSettings(); BL.audio(); BL.audioEvent('volume'); titleRedraw(`[data-snd="${b.dataset.snd}"]`); });
+  $('sBack').onclick = settingsBack;
+  if (PAD.on && !ui.contains(document.activeElement)) $('sBack').focus({ preventScroll: true });
   CAM.want = fit(fullBounds(), { t: 0, b: 0, l: 0, r: 0 });
 }
+function settingsBack() { APP.titleView = null; showTitle(); const b = $('tSet'); if (b) b.focus({ preventScroll: true }); }
 function sessionHint() {
   const f = focusOf(), drill = SETTINGS.focus !== 'all';
   const n = SETTINGS.order === 'all' ? 'every situation, in order' : `${SETTINGS.reps} plays`;
@@ -6055,8 +6154,10 @@ function handleInput(rdt) {
   if (kp('KeyZ') || pp('rs')) { toggleView(); }
   if ((kp('KeyM') || pp('back')) && COACH.state !== 'off' && m !== 'title' && m !== 'summary' && m !== 'trophy') coachFlag();
   if (m === 'title' || m === 'summary') {
-    if (m === 'title' && (kp('Enter') && !(document.activeElement && document.activeElement.tagName === 'BUTTON' && document.activeElement.id !== 'goBtn')) ) { startSession(); return; }
-    if (pp('a')) { const a = document.activeElement; if (a && a.tagName === 'BUTTON') a.click(); else if (m === 'title') startSession(); else ($('bAgain') || $('campDone'))?.click(); return; }
+    if (TRAIN && (kp('Escape') || pp('b'))) { campPost({ type: 'close' }); return; }   // B: back to Bulls Baseball
+    if (m === 'title' && APP.titleView === 'settings' && (kp('Escape') || pp('b')) && !TRAIN) { settingsBack(); return; }
+    if (m === 'title' && APP.titleView !== 'settings' && (kp('Enter') && !(document.activeElement && document.activeElement.tagName === 'BUTTON' && document.activeElement.id !== 'goBtn')) ) { startSession(); return; }
+    if (pp('a')) { const a = document.activeElement; if (a && (a.tagName === 'BUTTON' || a.tagName === 'SUMMARY')) a.click(); else if (m === 'title' && APP.titleView !== 'settings') startSession(); else ($('bAgain') || $('campDone'))?.click(); return; }
     navFocus(); return;
   }
   if (m === 'pre') {
@@ -6118,7 +6219,7 @@ function navFocus() {
   const els = [...$('ui').querySelectorAll('button, input, summary')].filter(e => e.offsetParent);
   if (!els.length) return;
   const cur = document.activeElement && els.includes(document.activeElement) ? document.activeElement : null;
-  if (!cur) { els[0].focus(); return; }
+  if (!cur) { ($('goBtn') || $('sBack') || $('bAgain') || els[0]).focus(); return; }
   const r0 = cur.getBoundingClientRect(), c0 = [r0.left + r0.width / 2, r0.top + r0.height / 2];
   let best = null, bd = 1e9;
   for (const e of els) { if (e === cur) continue; const r = e.getBoundingClientRect(), c = [r.left + r.width / 2, r.top + r.height / 2], dx = c[0] - c0[0], dy = c[1] - c0[1];
