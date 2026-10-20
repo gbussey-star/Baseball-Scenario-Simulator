@@ -314,7 +314,7 @@ import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.m
 window.__BBB_OK = true;
 
 // ---------------- math ----------------
-const VERSION = 'v6.7';
+const VERSION = 'v6.8';
 const D2R = Math.PI / 180;
 const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -790,7 +790,9 @@ for (const side of ['LF', 'CF', 'RF']) for (const on of [[], [1], [2], [1, 2]]) 
   let relay;
   if (T === 2) relay = side === 'LF' ? 'SS' : side === 'RF' ? '2B' : (fp.x < 0 ? 'SS' : '2B');
   else if (T === 3) relay = rfShallow ? '2B' : 'SS';
-  else relay = corners ? (side === 'LF' ? '3B' : '1B') : (side === 'LF' ? 'SS' : side === 'RF' ? '2B' : (fp.x < 0 ? 'SS' : '2B'));
+  // throws home from the corners: the corner infielder cuts it even when the middle infielders are the cutoffs, because on a
+  // single to right (left) the second baseman (shortstop) went after the ball and cannot get back to the line to the plate
+  else relay = corners || side !== 'CF' ? (side === 'LF' ? '3B' : side === 'RF' ? '1B' : (fp.x < 0 ? '3B' : '1B')) : (fp.x < 0 ? 'SS' : '2B');
   const tgt = G.base[Tb];
   const dd = vdist(fp, tgt);
   const cd = T === 2 ? clamp(0.42 * dd, 0.3 * B, 0.65 * B) : rfShallow ? 0.62 * dd : T === 3 ? clamp(0.42 * dd, 0.35 * B, 0.75 * B) : Math.min(0.75 * B, 0.5 * dd);
@@ -2211,7 +2213,7 @@ const BL = (function makeBullsLib(HOST) {
       if (!force && on === M.vOn && s.musicVol === M.vM && s.sfxVol === M.vS && s.crowdVol === M.vC) return;
       M.vOn = on; M.vM = s.musicVol; M.vS = s.sfxVol; M.vC = s.crowdVol;
       const t = ctx.currentTime, set = (p, v) => p.setTargetAtTime(v, t, 0.03);
-      set(M.master.gain, on * 0.85); set(M.mus.gain, sq(s.musicVol)); set(M.fx.gain, sq(s.sfxVol)); set(M.fxE.gain, sq(s.sfxVol)); set(M.crowdV.gain, sq(s.crowdVol));
+      set(M.master.gain, on * 0.85); set(M.mus.gain, sq(s.musicVol) * (S.campF ?? 1)); set(M.fx.gain, sq(s.sfxVol)); set(M.fxE.gain, sq(s.sfxVol)); set(M.crowdV.gain, sq(s.crowdVol));
     }
 
     // ---------------- instruments ----------------
@@ -3002,6 +3004,7 @@ const BL = (function makeBullsLib(HOST) {
       if (kind === 'game-start') { S.lastWalk = null; S.brk = 0; if (ctx) cue('playball'); return; }
       if (!ctx || !S.M || !SETTINGS.sound) return;
       if (kind === 'volume') return vols(true);
+      if (kind === 'camp') { S.campF = d.on ? 0.55 : 1; vols(true); if (d.on && (!S.cue || S.cue.name !== 'title')) cue('title'); return; }
       const C = S.M.cr, t = now();
       switch (kind) {
         case 'at-bat':
@@ -6439,7 +6442,7 @@ function showSettings() {
    <div class="sethead"><button class="chipbtn" id="sBack">‹ Back</button><h2 class="logo">Settings</h2><span class="hint">${PAD.on ? 'B goes back.' : 'Esc goes back.'}</span></div>
    <div class="set">
     <div class="srow"><span class="lab">Field</span>${seg('field', Object.values(FIELDS).map(f => [f.id, f.name, f.sub]))}</div>
-    <div class="srow"><span class="lab">Level</span>${seg('level', [['easy', 'Easy', '12U · one relay man'], ['medium', 'Medium', '13–14U · more setups'], ['hard', 'Hard', 'HS · trailer, all 1st & 3rd']])}<p class="hint">${{ easy: 'Easy: one relay man (the other middle infielder covers second), the middle infielders as cutoffs, and basic setups: normal, double-play depth, infield in, corners in, pull hitters, deep or shallow outfield, and the 12U shallow right fielder.', medium: 'Medium adds halfway, runner speed, early or late swings, no-doubles, and the outfield in for the winning run.', hard: 'Hard adds a trailer behind the relay man who calls the base, and the throw-through and back-to-the-pitcher first-and-third looks.' }[SETTINGS.level || 'easy']}</p></div>
+    <div class="srow"><span class="lab">Level</span>${seg('level', [['easy', 'Easy', '12U · one relay man'], ['medium', 'Medium', '13–14U · more setups'], ['hard', 'Hard', 'HS · trailer, all 1st & 3rd']])}<p class="hint">${{ easy: 'Easy: one relay man (the other middle infielder covers second), the middle infielders as cutoffs (on a single to left or right with a play at the plate, the third or first baseman cuts it), and basic setups: normal, double-play depth, infield in, corners in, pull hitters, deep or shallow outfield, and the 12U shallow right fielder.', medium: 'Medium adds halfway, runner speed, early or late swings, no-doubles, and the outfield in for the winning run.', hard: 'Hard adds a trailer behind the relay man who calls the base, and the throw-through and back-to-the-pitcher first-and-third looks.' }[SETTINGS.level || 'easy']}</p></div>
     <div class="srow"><span class="lab">Play speed</span>${seg('speed', [[1, 'Game', '1×'], [0.75, 'Brisk', '0.75×'], [0.5, 'Learning', '0.5×'], [0.35, 'Slow', '0.35×']])}</div>
     <div class="srow"><span class="lab">Cutoff on throws home</span>${seg('cutoff', [['middle', 'Middle infielders', 'SS and 2B (small-field version)'], ['corners', 'Corner infielders', '3B from left, 1B from center and right']])}</div>
     <div class="srow"><span class="lab">Pre-pitch setup</span>${seg('setup', [['true', 'On', 'move to your starting spot before every pitch'], ['false', 'Off', 'start already in position']])}</div>
