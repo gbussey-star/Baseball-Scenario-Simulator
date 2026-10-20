@@ -314,7 +314,7 @@ import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.m
 window.__BBB_OK = true;
 
 // ---------------- math ----------------
-const VERSION = 'v6.1';
+const VERSION = 'v6.7';
 const D2R = Math.PI / 180;
 const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -773,6 +773,7 @@ def('gbR3-in', 'Ground ball', C => {
 });
 
 // ---- singles to the outfield ----
+const SHORT_THROW = 1.25;   // bases: an outfielder who fields it closer than this to the target base throws straight to it
 for (const side of ['LF', 'CF', 'RF']) for (const on of [[], [1], [2], [1, 2]]) def(`single-${side}-${on.join('')}`, 'Base hit', C => {
   const { G, J, B } = C;
   const sit = { on, outs: C.pick([0, 1, 2]), bat: C.pick(['R', 'L']) };
@@ -794,6 +795,10 @@ for (const side of ['LF', 'CF', 'RF']) for (const on of [[], [1], [2], [1, 2]]) 
   const dd = vdist(fp, tgt);
   const cd = T === 2 ? clamp(0.42 * dd, 0.3 * B, 0.65 * B) : rfShallow ? 0.62 * dd : T === 3 ? clamp(0.42 * dd, 0.35 * B, 0.75 * B) : Math.min(0.75 * B, 0.5 * dd);
   const cspot = C.onLine(fp, tgt, cd);
+  // Outfielder almost in the infield (shallow alignment, or the single was fielded close to the bag): the throw is short
+  // enough to go straight to the base, and the infielder who went after the ball would end up standing next to the
+  // outfielder instead of halfway. No cutoff: he pulls up near the ball, out of the throwing lane, in case it gets by.
+  const direct = !rfShallow && T !== 4 && dd < SHORT_THROW * B;
   const jobs = {}, decide = {}, calls = {}, aiCalls = [];
   let variant = null, runners = [], batter = { goal: 1 };
   const tName = BNC[Tb];
@@ -802,22 +807,27 @@ for (const side of ['LF', 'CF', 'RF']) for (const on of [[], [1], [2], [1, 2]]) 
   jobs[side] = J.field(rf12 ? 'You were playing shallow, like an extra infielder. Charge it, field it clean, and throw him out at first if you can get him.' : `Base hit to you. Field it cleanly and get it back to the infield.`);
   if (rf12) decide[side] = { kind: 'throw', opts: ['b1', 'b2', 'b3', 'hold'], correct: sim => (sim.outPlays(sim.F.RF).includes('b1') ? 'b1' : 'b2'), why: 'Shallow right fielder with nobody on: if you can beat the batter to first, throw to first for the out. If he is already there, get it to second through the cutoff.' };
   else if (rfShallow) decide[side] = { kind: 'throw', opts: ['b1', 'b2', 'b3', 'hold'], correct: sim => { const o = sim.outPlays(sim.F.RF); return o.includes('b2') ? 'b2' : o.includes('b1') ? 'b1' : 'b2'; }, ok: ['b1', 'b2'], why: 'You were playing shallow, so you got to it fast. The play is at second for the lead runner, or the batter at first if he is slow getting out. Do not throw behind the runner to third.' };
+  else if (direct) decide[side] = { kind: 'throw', opts: ['b2', 'b3', 'b4', 'hold'], correct: 'b' + T, why: T === 2 ? 'Nobody on: throw to second. You are close enough to throw straight to the bag, so there is no cutoff.' : 'Runner on first: throw two bases ahead of him, to third. You fielded it close enough to throw straight to the bag.' };
   else decide[side] = { kind: 'throw', opts: ['b2', 'b3', 'b4', 'hold'], correct: 'b' + T, why: T === 2 ? 'Nobody on: throw to second through the cutoff man. That keeps the batter at first.' : T === 3 ? 'Runner on first: throw two bases ahead of him, to third, through the cutoff man.' : 'Runner in scoring position: the play is at the plate. Throw home through the cutoff so he can cut it if needed.' };
   const lineTxt = `${tName === 'Home' ? 'home' : tName.toLowerCase()}`;
-  jobs[relay] = J.cut(cspot, `Cutoff to ${T === 4 ? 'home' : BS[T]}`, `Get in line between the ${PL[side]} and ${lineTxt}, about ${Math.round(cd)} feet from the ${T === 4 ? 'plate' : 'bag'}. Hands up, big target.`, { a: fp, b: tgt }, side);
+  if (direct) {
+    const fp2 = vlerp(A[relay], fp, 0.65), u = vnorm(vsub(tgt, fp)), nrm = v2(-u.y, u.x), off = vdot(vsub(fp2, fp), nrm), side0 = Math.sign(vdot(vsub(A[relay], fp), nrm)) || 1;
+    const spot = Math.abs(off) < 0.22 * B ? vadd(fp2, vmul(nrm, side0 * 0.22 * B - off)) : fp2;
+    jobs[relay] = J.hold(spot, 'Go after it, then stay near the ball', `You went after the ball and it got through to the ${PL[side]}. He is in close, so there is no cutoff: he throws straight to ${BS[T] === '2B' ? 'second' : 'third'}. Pull up near the ball, just off the throwing lane, in case it gets by him or the throw comes back your way.`, E => (E['release:' + side] ?? E.field ?? 1.6) + 0.2);
+  } else jobs[relay] = J.cut(cspot, `Cutoff to ${T === 4 ? 'home' : BS[T]}`, `Get in line between the ${PL[side]} and ${lineTxt}, about ${Math.round(cd)} feet from the ${T === 4 ? 'plate' : 'bag'}. Hands up, big target.`, { a: fp, b: tgt }, side);
   if (T === 2) {
     const cov = relay === 'SS' ? '2B' : 'SS';
-    jobs[cov] = J.cover(2, `Cover second and line up the cutoff man between you and the ${PL[side]}.`, 'Cover 2B, line up the cutoff');
+    jobs[cov] = direct ? J.cover(2, `Cover second and give the ${PL[side]} a target. He is close enough to throw it straight to you.`, 'Cover 2B, give a target') : J.cover(2, `Cover second and line up the cutoff man between you and the ${PL[side]}.`, 'Cover 2B, line up the cutoff');
     calls[cov] = { opt: ['n2'], win: E => [0.2, (E['release:' + side] ?? E.field ?? 2) + 0.3], why: 'Calling “Two!” tells the outfielder where the throw goes.' };
-    decide[relay] = { kind: 'cutoff', opts: ['thru', 'cut_hold', 'b2', 'b1'], correct: 'cut_hold', ok: ['thru'], why: 'The batter stopped at first. Cut it and run it in. There is no play.' };
+    if (!direct) decide[relay] = { kind: 'cutoff', opts: ['thru', 'cut_hold', 'b2', 'b1'], correct: 'cut_hold', ok: ['thru'], why: 'The batter stopped at first. Cut it and run it in. There is no play.' };
     jobs['1B'] = rf12 ? J.cover(1, 'The right fielder is in shallow and can throw the batter out. Get back to the bag and give him a target.', 'Get back to the bag') : J.cover(1, 'Cover first in case the batter rounds too far.', 'Cover 1B behind the runner');
     jobs['3B'] = J.cover(3, 'Cover third.');
     if (side === 'RF') { const tgt = vmul(G.base[1], 0.8), dir = vnorm(vsub(tgt, G.Mp)); jobs.P = J.hold(vadd(G.Mp, vmul(dir, Math.min(0.35 * B, vdist(tgt, G.Mp)))), 'Break toward 1B, then pull up', 'Ball hit to your left: break toward first in case the first baseman goes for it. When it gets through and he gets back to the bag, pull up and stay in the middle of the diamond.', E => E.field ?? 1.6); }
-    else jobs.P = J.hold(clampField(G, vlerp(G.Mp, cspot, 0.35)), 'Move toward the ball', `Nobody on: the cutoff man and the ${relay === 'SS' ? 'second baseman' : 'shortstop'} at the bag handle the throw, and the far outfielder backs up second. Always move toward the ball: come off the mound toward it, into the middle of the infield, ready to cover a base if the batter rounds too far.`, E => (E['release:' + side] ?? E.field ?? 1.8) + 0.3);
+    else jobs.P = J.hold(clampField(G, vlerp(G.Mp, cspot, 0.35)), 'Move toward the ball', `Nobody on: ${direct ? 'the' : 'the cutoff man and the'} ${relay === 'SS' ? 'second baseman' : 'shortstop'} at the bag handle${direct ? 's' : ''} the throw, and the far outfielder backs up second. Always move toward the ball: come off the mound toward it, into the middle of the infield, ready to cover a base if the batter rounds too far.`, E => (E['release:' + side] ?? E.field ?? 1.8) + 0.3);
     jobs.C = J.backup(C.cBack1(), 'Trail toward 1B', 'Trail the runner down the line in case there is a throw behind him at first.', null, E => (E.field ?? 1.8) + 0.4);
   } else if (T === 3) {
     runners = [{ from: 1, goal: 3, delay: 0.1 }];
-    jobs['3B'] = J.cover(3, `Cover third and line up the shortstop between you and the ${PL[side]}.`, 'Cover 3B, line up the cutoff');
+    jobs['3B'] = direct ? J.cover(3, `Cover third and give the ${PL[side]} a target. He fielded it close enough to throw straight to you.`, 'Cover 3B, call it') : J.cover(3, `Cover third and line up the shortstop between you and the ${PL[side]}.`, 'Cover 3B, line up the cutoff');
     if (rfShallow) {
       jobs['3B'] = J.cover(3, 'Cover third. The right fielder is in shallow, so the play should be at second.', 'Cover 3B');
       jobs.SS = J.cover(2, 'The ball got through the right side and the second baseman went after it, so second is yours. The right fielder is shallow and gets to it fast: the play is at second. Get to the bag and yell “Two!”.', 'Cover 2B, call it');
@@ -832,7 +842,7 @@ for (const side of ['LF', 'CF', 'RF']) for (const on of [[], [1], [2], [1, 2]]) 
     } else {
     calls['3B'] = { req: ['n3'], win: E => [Math.max(0.2, (E.field ?? 2) - 1.0), (E['release:' + side] ?? E.field ?? 2) + 0.4], why: 'The runner is trying for third. Yell “Three! Three!” so the outfielder and cutoff know where the play is.' };
     aiCalls.push({ pos: '3B', id: 'n3', at: E => Math.max(0.4, (E.field ?? 2) - 0.4) });
-    decide.SS = { kind: 'cutoff', opts: ['thru', 'b3', 'cut_hold', 'b2'], correct: ['thru', 'b3'], ok: ['cut_hold'], why: 'Third baseman is yelling “Three!”. Let it go through if it is on line, or cut it and fire to third.' };
+    if (!direct) decide.SS = { kind: 'cutoff', opts: ['thru', 'b3', 'cut_hold', 'b2'], correct: ['thru', 'b3'], ok: ['cut_hold'], why: 'Third baseman is yelling “Three!”. Let it go through if it is on line, or cut it and fire to third.' };
     jobs['2B'] = J.cover(2, 'Cover second for the batter-runner.');
     jobs['1B'] = J.cover(1, 'Cover first behind the batter-runner.', 'Cover 1B behind the runner');
     jobs.P = J.backup(C.past(G.base[3], fp, 0.55 * B), 'Back up 3B', side === 'RF' ? 'Break toward first until the ball is through, then sprint behind third in foul territory, in line with the throw.' : 'Get behind third in foul territory, in line with the throw.', { a: fp, b: G.base[3] }, C.atBase(3));
@@ -867,9 +877,9 @@ for (const side of ['LF', 'CF', 'RF']) for (const on of [[], [1], [2], [1, 2]]) 
     else if (o === 'LF') jobs[o] = J.backup(C.line3(), 'Back up 3B', 'Come in along the line behind third in case the throw gets away.', null, E => (E['release:' + side] ?? E.field ?? 2) + 0.8);
     else jobs[o] = J.backup(C.past(G.base[2], G.base[3], 0.7 * B), 'Back up 2B', 'Come in behind second for a throw from the third-base side.', { a: G.base[3], b: G.base[2] }, E => (E.field ?? 2) + 0.8);
   }
-  const relayFor = rfShallow ? null : { [T]: relay };
+  const relayFor = rfShallow || direct ? null : { [T]: relay };
   const name = `Single to ${side}${on.length ? ', ' + (on.length === 2 ? 'two on' : 'runner on ' + BN[on[0]]) : ''}`;
-  return { name, sit, A, hit, path: P, fielder: side, fp, runners, batter, jobs, decide, calls, aiCalls, relayFor, director: T === 4 ? 'C' : T === 3 && !rfShallow ? '3B' : null, variant };
+  return { name, sit, A, hit, path: P, fielder: side, fp, runners, batter, jobs, decide, calls, aiCalls, relayFor, director: T === 4 ? 'C' : T === 3 && !rfShallow && !direct ? '3B' : null, variant };
 }, on.length === 0 ? 0.8 : 1.1);
 
 // ---- extra-base hits in the gap ----
@@ -1867,12 +1877,25 @@ function setupScore(spec, pos, P) {
   const G = spec.G, want = spec.A[pos], S = setupStep(G), of = OFS.has(pos), tolS = setupTolSteps(pos), span = of ? 2 : 1;
   const rr = vnorm(want), ll = v2(rr.y, -rr.x), dv = vsub(P, want);
   const n0 = spec.setup && spec.setup.neutral[pos] || want, need = vsub(want, n0), went = vsub(P, n0);
-  const axis = (u) => { const r = vdot(need, u) / S, a = vdot(went, u) / S, e = a - r; return Math.abs(r) >= 1.5 && Math.sign(a) === Math.sign(r) && Math.abs(a) >= 0.5 * Math.abs(r) && Math.abs(a) <= Math.abs(r) + tolS ? 0 : e; };
-  const dd = axis(rr), dl = axis(ll);
-  const e = Math.max(Math.abs(dd), Math.abs(dl)), v = e <= tolS ? 1 : Math.max(0, 1 - (e - tolS) / span);
+  // v6.7 (coaches' note: still too strict): shading the right way earns points even when the number of steps is off.
+  // Per axis: within the tolerance = full; moved the right way and at least half the move = full; moved the right way
+  // but less = 75-100%; moved the right way and past it = at least half; otherwise it fades over 2.5 (IF) / 5 (OF) steps.
+  const axis = u => {
+    const r = vdot(need, u) / S, a = vdot(went, u) / S, e = a - r, ae = Math.abs(e);
+    if (ae <= tolS) return { c: 1, e };
+    if (Math.abs(r) >= 1.5 && Math.sign(a) === Math.sign(r) && Math.abs(a) >= 0.5) {
+      const f = Math.abs(a) / Math.abs(r);
+      if (f <= 1) return { c: f >= 0.45 ? 1 : 0.75 + 0.5 * f, e, way: 'short' };
+      return { c: Math.max(0.5, 1 - (Math.abs(a) - Math.abs(r) - tolS) / (2 * span + 1)), e, way: 'past' };
+    }
+    return { c: Math.max(0, 1 - (ae - tolS) / (2.5 * span)), e };
+  };
+  const AD = axis(rr), AL = axis(ll), dd = AD.e, dl = AL.e;
+  const e = Math.max(Math.abs(dd), Math.abs(dl)), v = Math.min(AD.c, AL.c);
   const tag = spec.setup.tag[pos].join(', '), why = spec.setup.why[pos].filter(Boolean), miss = [];
-  if (Math.abs(dd) > tolS) miss.push(`${stepsTxt(Math.abs(dd))} too ${dd > 0 ? 'deep' : 'shallow'}`);
-  if (Math.abs(dl) > tolS) miss.push(`${stepsTxt(Math.abs(dl))} too far toward ${dl > 0 ? (of ? 'right field' : 'first') : (of ? 'left field' : 'third')}`);
+  const latW = x => x > 0 ? (of ? 'right field' : 'first') : (of ? 'left field' : 'third');
+  if (AD.c < 1) miss.push(AD.way === 'short' ? `right way, but go ${stepsTxt(Math.abs(dd))} farther ${dd < 0 ? 'back' : 'in'}` : `${stepsTxt(Math.abs(dd))} too ${dd > 0 ? 'deep' : 'shallow'}${AD.way ? ' (right way, too far)' : ''}`);
+  if (AL.c < 1) miss.push(AL.way === 'short' ? `right way, but go ${stepsTxt(Math.abs(dl))} farther toward ${latW(-dl)}` : `${stepsTxt(Math.abs(dl))} too far toward ${latW(dl)}${AL.way ? ' (right way, too far)' : ''}`);
   const label = v === 1 ? `Set up right: ${tag}` : `${cap(miss.join(' and '))}. Should be: ${tag}`;
   return { v, label, d: vdist(P, want), steps: e, want: vcp(want), p: vcp(P), why, tag };
 }
@@ -1908,6 +1931,8 @@ function scoreRep(sim, dry) {
         if (mm.v > m.v + 1e-6 || (mm.v === m.v && mm.d < m.d - 0.5)) { m = mm; P = v2(q.x, q.y); sim.res.evalP = P; sim.res.evalT = q.t; }
       }
     }
+    // heading the right way counts: if you closed most of the distance from where you started, you get part credit
+    if (m.v < 0.8 && job.spot) { const st0 = sim.res.setup && sim.res.setup.p || s.A[me], d0 = vdist(st0, job.spot); if (d0 > 2 * tolOf(job, G)) { const pr = clamp(1 - m.d / d0, 0, 1); if (pr > 0.2) { const v2_ = Math.min(0.8, 0.1 + 0.85 * pr); if (v2_ > m.v) m = { ...m, v: v2_, text: `${m.text}, but heading the right way (${Math.round(pr * 100)}% of the way there)` }; } } }
     parts.push({ id: 'pos', w: 40, v: m.v, label: m.text, d: m.d });
     if (m.v < 0.75) {
       let best = null, bd = 1e9;
@@ -2236,6 +2261,57 @@ const BL = (function makeBullsLib(HOST) {
       if (dur) { const p = g.gain; p.setValueAtTime(0, t); p.linearRampToValueAtTime(v, t + 0.06); p.setValueAtTime(v, t + dur - 0.15); p.linearRampToValueAtTime(0, t + dur); }
       go(s, t, t + (dur || (b.duration - (off || 0)) / (rate || 1)) + 0.02, [g], off);
     }
+    // ---- extra voices for the walk-up genres ----
+    function gtr(c, t, m, d, v, mute) {   // overdriven guitar: two detuned saws -> tanh -> cabinet lowpass; mute = palm-muted chug
+      d = Math.max(d, 0.05);
+      const f = mf(m), pre = gn(mute ? 0.9 : 0.7), ws = ctx.createWaveShaper(), lp = bq('lowpass', mute ? 800 : 2600, 0.8), g = gn(0, c.g);
+      ws.curve = S.gtrC || (S.gtrC = curve(x => Math.tanh(5 * x)));
+      const o = osc('sawtooth', f), o2 = osc('sawtooth', f * 1.007); o.connect(pre); o2.connect(pre); pre.connect(ws); ws.connect(lp); lp.connect(g);
+      const p = g.gain; p.setValueAtTime(0, t); p.linearRampToValueAtTime(v, t + 0.004); p.setTargetAtTime(v * 0.55, t + 0.01, mute ? 0.04 : 0.4); p.setTargetAtTime(0, t + d, 0.04);
+      const e = t + d + 0.25; go(o, t, e, [pre, ws, lp, g]); go(o2, t, e);
+    }
+    function saw(c, t, m, d, v, pad) {   // supersaw: three detuned saws through a filter that opens on the attack (pad: slow swell)
+      d = Math.max(d, 0.05);
+      const f = mf(m), lp = bq('lowpass', f * 2, pad ? 0.7 : 2), g = gn(0, c.g); lp.connect(g);
+      const os = [-15, 0, 14].map(dt => { const o = osc('sawtooth', f); o.detune.value = dt; o.connect(lp); return o; });
+      const a = pad ? 0.3 : 0.01, F = lp.frequency; F.setValueAtTime(f * 1.5, t); F.linearRampToValueAtTime(Math.min(f * (pad ? 4 : 8), 9000), t + a + 0.03); F.setTargetAtTime(Math.min(f * 3.5, 7000), t + a + 0.05, 0.3);
+      const p = g.gain; p.setValueAtTime(0, t); p.linearRampToValueAtTime(v, t + a); p.setTargetAtTime(v * 0.75, t + a, 0.3); p.setTargetAtTime(0, t + d, pad ? 0.2 : 0.07);
+      const e = t + d + (pad ? 1 : 0.45); go(os[0], t, e, [lp, g]); go(os[1], t, e); go(os[2], t, e);
+    }
+    function sub(c, t, m, d, v) {   // 808 bass: a sine that drops onto its pitch, plus a little 2nd harmonic so small speakers hear it
+      d = Math.max(d, 0.1);
+      const f = mf(m), o = osc('sine', f), o2 = osc('sine', f * 2), g = gn(0, c.g), g2 = gn(0.25, g); o.connect(g); o2.connect(g2);
+      for (const [x, k] of [[o, 1], [o2, 2]]) { x.frequency.setValueAtTime(f * k * 2, t); x.frequency.exponentialRampToValueAtTime(f * k, t + 0.06); }
+      const p = g.gain; p.setValueAtTime(0, t); p.linearRampToValueAtTime(v, t + 0.004); p.setTargetAtTime(v * 0.7, t + 0.01, 0.4); p.setTargetAtTime(0, t + d, 0.06);
+      const e = t + d + 0.35; go(o, t, e, [g, g2]); go(o2, t, e);
+    }
+    function mallet(c, t, m, d, v, parts) { const f = mf(m); for (const [h, a, dc] of parts) { const o = osc('sine', f * h), g = gn(0, c.g); o.connect(g); ad(g.gain, t, 0.002, v * a, dc); go(o, t, t + dc + 0.05, [g]); } }
+    const MAR = [[1, 1, 0.45], [4, 0.22, 0.07], [9.9, 0.05, 0.03]], STEEL = [[1, 1, 0.8], [2, 0.45, 0.55], [3, 0.2, 0.35], [4.02, 0.12, 0.2]], BELL = [[1, 1, 1.4], [2.76, 0.4, 0.6], [5.4, 0.2, 0.3], [8.9, 0.08, 0.15]];
+    function pluck(c, t, m, d, v, w, q, dec) {   // a plucked string: bright attack, filter closes, dies away (surf guitar, clavinet, slap bass)
+      const f = mf(m), o = osc(w, f), lp = bq('lowpass', f * 8, q), g = gn(0, c.g); o.connect(lp); lp.connect(g);
+      lp.frequency.setValueAtTime(Math.min(f * 12, 12000), t); lp.frequency.setTargetAtTime(f * 1.3, t + 0.005, dec * 0.5);
+      const p = g.gain; p.setValueAtTime(0, t); p.linearRampToValueAtTime(v, t + 0.003); p.setTargetAtTime(0, t + 0.004, dec); p.setTargetAtTime(0, t + d, 0.025);
+      go(o, t, t + Math.min(d + 0.15, dec * 5 + 0.05), [lp, g]);
+    }
+    function timp(c, t, m, d, v) { const f = mf(m), o = osc('sine', f), g = gn(0, c.g), L = Math.max(0.6, d); o.connect(g); o.frequency.setValueAtTime(f * 1.06, t); o.frequency.exponentialRampToValueAtTime(f, t + 0.2); ad(g.gain, t, 0.004, v, L); go(o, t, t + L + 0.1, [g]); drum(c, t, v, 'lowpass', 320, 0.8, 0.45, 0.08); }
+    function tom(c, t, v, f) { const o = osc('sine', f), g = gn(0, c.g); o.connect(g); o.frequency.setValueAtTime(f * 1.6, t); o.frequency.exponentialRampToValueAtTime(f, t + 0.08); ad(g.gain, t, 0.002, v * 0.9, 0.32); go(o, t, t + 0.4, [g]); drum(c, t, v, 'bandpass', f * 4, 1, 0.15, 0.05); }
+    function cowbell(c, t, m, d, v) { const b = bq('bandpass', 820, 2.5), g = gn(0, c.g); b.connect(g); ad(g.gain, t, 0.002, v * 0.5, 0.2); const o = osc('square', 562), o2 = osc('square', 845); o.connect(b); o2.connect(b); go(o, t, t + 0.3, [b, g]); go(o2, t, t + 0.3); }
+    function clave(c, t, m, d, v) { const o = osc('sine', 2500), g = gn(0, c.g); o.connect(g); ad(g.gain, t, 0.001, v * 0.45, 0.05); go(o, t, t + 0.08, [g]); }
+    function scratch(c, t, m, d, v) {   // a record scratch: noise through a band that whips up and back
+      const b = bq('bandpass', 900, 4), g = gn(0, c.g); b.connect(g); const F = b.frequency;
+      F.setValueAtTime(600, t); F.exponentialRampToValueAtTime(3400, t + 0.09); F.exponentialRampToValueAtTime(500, t + 0.22);
+      const p = g.gain; p.setValueAtTime(0, t); p.linearRampToValueAtTime(v * 1.2, t + 0.01); p.setValueAtTime(v * 1.2, t + 0.08); p.linearRampToValueAtTime(v * 0.3, t + 0.11); p.linearRampToValueAtTime(v * 1.1, t + 0.14); p.linearRampToValueAtTime(0, t + 0.24);
+      go(nsrc(b), t, t + 0.26, [b, g]);
+    }
+    function riser(c, t, m, d, v) {   // noise sweep that builds into the drop
+      d = Math.max(d, 0.3); const b = bq('bandpass', 400, 3), g = gn(0, c.g); b.connect(g);
+      b.frequency.setValueAtTime(300, t); b.frequency.exponentialRampToValueAtTime(7000, t + d);
+      const p = g.gain; p.setValueAtTime(1e-4, t); p.exponentialRampToValueAtTime(v * 0.6, t + d); p.linearRampToValueAtTime(0, t + d + 0.04); go(nsrc(b), t, t + d + 0.06, [b, g]);
+    }
+    function gsnare(c, t, m, d, v) {   // 80s gated snare: a burst of room that stops dead
+      snare(c, t, m, d, v * 0.8); const b = bq('bandpass', 1700, 0.5), g = gn(0, c.g); b.connect(g);
+      const p = g.gain; p.setValueAtTime(0, t); p.linearRampToValueAtTime(v * 0.4, t + 0.005); p.setValueAtTime(v * 0.32, t + 0.2); p.linearRampToValueAtTime(0, t + 0.23); go(nsrc(b), t, t + 0.25, [b, g]);
+    }
     const INS = {
       organ: (c, t, m, d, v) => organ(c, t, m, d, v, W.full, 1),
       organm: (c, t, m, d, v) => organ(c, t, m, d, v, W.mellow, 0),
@@ -2247,6 +2323,13 @@ const BL = (function makeBullsLib(HOST) {
       brass, choir, k: kick, s: snare, c: clapD, x: crash,
       h: (c, t, m, d, v) => drum(c, t, v, 'highpass', 7500, 0.7, 0.2, 0.045),
       o: (c, t, m, d, v) => drum(c, t, v, 'highpass', 7000, 0.7, 0.18, 0.25),
+      gtr: (c, t, m, d, v) => gtr(c, t, m, d, v, 0), gtrm: (c, t, m, d, v) => gtr(c, t, m, d, v, 1),
+      saw: (c, t, m, d, v) => saw(c, t, m, d, v, 0), spad: (c, t, m, d, v) => saw(c, t, m, d, v, 1), sub,
+      mar: (c, t, m, d, v) => mallet(c, t, m, d, v, MAR), steel: (c, t, m, d, v) => mallet(c, t, m, d, v, STEEL), bell: (c, t, m, d, v) => mallet(c, t, m, d, v, BELL),
+      surf: (c, t, m, d, v) => pluck(c, t, m, d, v, 'sawtooth', 4, 0.3), clav: (c, t, m, d, v) => pluck(c, t, m, d, v, W.p25, 5, 0.09), slap: (c, t, m, d, v) => pluck(c, t, m, d, v, 'sawtooth', 3, 0.12),
+      timp, cb: cowbell, cl: clave, sc: scratch, rise: riser, gs: gsnare,
+      th: (c, t, m, d, v) => tom(c, t, v, 200), tl: (c, t, m, d, v) => tom(c, t, v, 120), tf: (c, t, m, d, v) => tom(c, t, v, 80),
+      sk: (c, t, m, d, v) => drum(c, t, v, 'highpass', 6000, 0.7, 0.13, 0.06),
       smp: (c, t, m, d, v) => smp(m, t, v, c.gc),
       cheer: (c, t, m, d, v) => cheer(v, t),
     };
@@ -2381,37 +2464,220 @@ const BL = (function makeBullsLib(HOST) {
         { i: 'pedal', v: 0.3, at: 2.75, n: 'C2:2' },
       ] },
     };
+    // "Opera" walk-up: the opening of Bach's Toccata and Fugue in D minor (public domain), the spooky pipe-organ
+    // sound of the opera house, no singing: the famous three-note flourish in octaves, then a big rolled chord.
+    const TOC = 'A5:.2 G5:.2 A5:1.6 r:.6 G5:.18 F5 E5 D5 C#5:.6 D5:1.6 r:.8 ';
+    SONGS.opera = { bpm: 66, len: 15, pri: 2, prot: 2, q: 1, duck: 0.5, organ: 1, tr: [
+      { i: 'organ', v: 0.2, n: TOC + 'A4:.2 G4:.2 A4:1.6 r:.6 E4:.4 F4 C#4 D4:1.6 r:.8 ' + 'A3:.2 G3:.2 A3:1.6 r:.6 G3:.18 F3 E3 D3 C#3:.6 D3:1.6 r:.4 C#4+E4+G4+Bb4:1.2 D4+F4+A4+D5:2.4', art: 0.97 },
+      { i: 'organm', v: 0.07, n: 'r:11.4 C#3+E3+G3:1.2 D3+F3+A3:2.4' },
+      { i: 'pedal', v: 0.34, n: 'D2:4.6 r:3.2 D2:3.6 A1:1.2 D1+D2:2.4' },
+    ] };
     const getSong = n => { const s = SONGS[n]; return s && (s.ok ? s : compile(s)); };
-    // walk-up jingle: 2 bars + a final hit (~4-5 s), unique per player, seeded from the name
+    // ---------------- walk-up songs: eleven genres, each its own kind of song ----------------
+    // Every genre writes a different shape of tune (riff, fanfare, call-and-clap, groove, chant...), at its own
+    // tempo, feel and length, on its own instruments. The player's name seeds the key, tempo and every choice
+    // inside the genre, so two rock players get two different riffs. 'auto' picks the genre from the name too.
     const PCN = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
-    const RH = [[0.75, 0.75, 0.5, 1, 1], [0.5, 0.5, 0.5, 0.5, 1, 1], [1, 0.5, 0.5, 1, 1], [0.5, 1, 0.5, 1, 1], [0.25, 0.25, 0.5, 1, 0.5, 1.5], [1.5, 0.5, 1.5, 0.5], [0.5, 0.5, 1, 0.5, 0.5, 1], [0.75, 0.75, 0.75, 0.75, 1]];
-    const STY = [
-      { name: 'rock', lead: [['lead', 0.17, 0], ['brass', 0.12, -12]], bass: 'b8', dr: ROCK },
-      { name: 'chip', lead: [['lead', 0.2, 0]], arp: 1, bass: 'b8', dr: { k: 'x.......x.......', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.' } },
-      { name: 'funk', lead: [['brass', 0.2, -12]], comp: ['organm', 'stab', 0.06], bass: 'b8', dr: { k: 'x..x..x...x.....', s: '....x.......x..o', h: 'xoxoxoxoxoxoxoxo' } },
-      { name: 'fanfare', lead: [['brass', 0.18, -12], ['lead', 0.1, 0]], comp: ['organ', 'pad', 0.04], bass: 'b4', dr: { k: 'x.......x.......', s: 'x.xxx.x.x.xxx.xx' } },
-      { name: 'organ', lead: [['organ', 0.2, -12]], comp: ['organm', 'c24', 0.07], bass: 'b4', bi: 'pedal', dr: { k: 'x...x...x...x...', c: '....x.......x...' } },
-    ];
-    function walkSong(name) {
-      let h = 2166136261; for (const ch of String(name || 'Bulls')) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+    const WALKS = ['rock', 'chip', 'funk', 'fanfare', 'organ', 'hiphop', 'stomp', 'surf', 'latin', 'synthwave', 'shuffle'];
+    const SCL = { maj: [0, 2, 4, 5, 7, 9, 11], pM: [0, 2, 4, 7, 9], pm: [0, 3, 5, 7, 10], dor: [0, 2, 3, 5, 7, 9, 10], hm: [0, 2, 3, 5, 7, 8, 11], blu: [0, 3, 5, 6, 7, 10] };
+    const dg = (sc, base, i) => base + 12 * Math.floor(i / sc.length) + sc[((i % sc.length) + sc.length) % sc.length];
+    const tri = (n, mi) => [n, n + (mi ? 3 : 4), n + 7];
+    // a melody: scale degrees walked over a rhythm -> [[beat, degree, dur]]
+    const wline = (g, rh, b0, i0, steps, lo = -3, hi = 11) => { let b = b0, i = i0; return rh.map((d, j) => { if (j) i = cl(i + g.pr(steps), lo, hi); const e = [b, i, d]; b += d; return e; }); };
+    const wnotes = (sc, base, ln, sh = 0) => ln.map(([b, i, d]) => [b, [dg(sc, base, i + sh)], d]);
+    const lane = (n, hits) => { const a = Array(n).fill('.'); for (const [i, c] of hits) if (i >= 0 && i < n) a[i] = c || 'x'; return a.join(''); };
+    const outro = (b, v = 0.5) => [{ d: { x: 'X', k: 'X' }, at: b, v }, { i: 'cheer', b: [b + 0.3], v: 0.35 }];
+    const WG = {
+      rock(g) {   // a power-chord riff with the kick locked to it, answered on bar 2, tom fill, big ringing chord. Some are metal.
+        const heavy = g.r() < 0.35, bpm = heavy ? 150 + g.ri(6) * 4 : 116 + g.ri(8) * 4, R = g.reg(40), chug = heavy || g.r() < 0.5, bars = heavy ? 3 : 2;
+        const tpl = g.pr(['x..x..x.', 'x..x.x..', 'x.x..x.x', 'x...x.x.', 'x..x..xx', 'x.xx..x.', 'x..xx..x']);
+        const pool = [g.pr([3, 5, 7]), g.pr([5, 7, 10]), g.pr([-2, 3, 10]), g.pr([7, 5, 3])], ans = g.pr([-2, 3, 5, 7, 10]);
+        const G = [], M = [], B = [], K = [], step = heavy ? 0.25 : 0.5;
+        for (let bar = 0; bar < bars; bar++) {
+          const hits = [...tpl].map((c, s) => c === 'x' ? s : -1).filter(s => s >= 0);
+          hits.forEach((s, j) => {
+            const b = bar * 4 + s / 2, d = chug ? (heavy ? 0.22 : 0.42) : ((j + 1 < hits.length ? hits[j + 1] : 8) - s) / 2 * 0.92;
+            const n = R + (bar % 2 && j === hits.length - 1 ? ans : j ? pool[(j - 1) % pool.length] : 0);
+            G.push([b, [n, n + 7, n + 12], d]); B.push([b, [n], d]); K.push([Math.round(b * 4), 'x']);
+          });
+          if (chug) for (let x = 0; x < 4; x += step) { const b = bar * 4 + x; if (!G.some(e => Math.abs(e[0] - b) < 0.3 && e[0] <= b)) M.push([b, [R, R + 7], step * 0.7]); }
+        }
+        const E = bars * 4, lick = !heavy && g.r() < 0.6, T = [
+          { i: 'gtr', v: 0.075, ev: G }, { i: 'gtrm', v: 0.07, ev: M }, { i: 'bass', v: 0.36, ev: B },
+          { d: { k: heavy ? 'x'.repeat(16 * bars) : lane(16 * bars, K), s: '....x.......x...'.repeat(bars), [heavy ? 'o' : 'h']: (heavy ? 'x...x...x...x...' : 'x.x.x.x.x.x.x.x.').repeat(bars) }, v: 0.55 },
+          { d: { th: 'xx..', tl: '..xx', tf: '....xxXX' }, st: 0.25, at: E, v: 0.5 }, { d: { s: '....xxxX' }, st: 0.25, at: E, v: 0.35 },
+          { i: 'gtr', v: 0.08, ev: [[E, [R + ans, R + ans + 7, R + ans + 12], 0.4], [E + 2, [R, R + 7, R + 12, R + 19], 3.2]] }, { i: 'bass', v: 0.4, ev: [[E + 2, [R], 3]] },
+          ...outro(E + 2),
+        ];
+        if (lick) T.push({ i: 'gtr', v: 0.06, ev: wnotes(SCL.pm, R + 24, wline(g, g.pr([[0.5, 0.5, 0.5, 0.5, 2], [0.25, 0.25, 0.5, 1, 2], [1, 0.5, 0.5, 2]]), 4, g.pr([4, 5, 6]), [-1, -1, 1, -2]), 0) });
+        return { bpm, len: E + 6, tr: T };
+      },
+      chip(g) {   // arcade: a 16th-note run-up, a bouncy pulse-wave tune over fast arpeggios, then the "level clear" jingle and a coin
+        const bpm = 150 + g.ri(8) * 4, mi = g.r() < 0.3, sc = mi ? SCL.pm : g.pr([SCL.maj, SCL.pM]), base = g.reg(67);
+        const run = g.r() < 0.5 ? [0, 1, 2, 3, 4, 5, 6, 7].map(i => dg(sc, base - 12, i)) : [0, 4, 7, 12, 4, 7, 12, 16].map(x => base - 12 + x - (mi && x % 12 === 4 ? 1 : 0));
+        const L = run.map((n, j) => [j * 0.25, [n], 0.22]);
+        const CR = [[0.5, 0.25, 0.25, 0.5, 0.5], [0.25, 0.25, 0.25, 0.25, 0.5, 0.5], [0.75, 0.25, 0.5, 0.5], [0.5, 0.5, 0.25, 0.25, 0.5], [0.25, 0.25, 0.5, 0.25, 0.25, 0.5]];
+        const a = g.pr(CR), b = g.pr(CR), m1 = wline(g, a, 2, g.pr([0, 2, 4]) + sc.length, [-2, -1, 1, 1, 2, 3]), m2 = wline(g, b, 4, m1[m1.length - 1][1], [-2, -1, 1, 2]);
+        L.push(...wnotes(sc, base, m1), ...wnotes(sc, base, m2), ...wnotes(sc, base, m1.map(([x, i, d]) => [x + 4, i, d]), 2));
+        const top = base + 12; L.push(...[0, 4 - mi, 7, 12].map((x, j) => [8 + j / 3, [top + x - 12], j < 3 ? 0.3 : 1.6]));
+        const prog = mi ? g.pr([[0, 8, 10, 0], [0, 5, 10, 7], [0, 3, 8, 7]]) : g.pr([[0, 5, 7, 0], [0, 9, 5, 7], [0, 7, 9, 5], [0, 4, 5, 7]]);
+        const isMin = x => mi ? x === 0 || x === 5 : x === 4 || x === 9, A = [], Bs = [];
+        prog.forEach((x, j) => { const ch = tri(base - 12 + x, isMin(x)), ar = [...ch, ch[0] + 12, ch[1] + 12, ch[2] + 12, ch[0] + 24, ch[2]]; for (let s = 0; s < 8; s++) A.push([2 + j * 1.5 + s * 0.1875, [ar[s]], 0.15]); for (let s = 0; s < 3; s++) Bs.push([2 + j * 1.5 + s * 0.5, [base - 24 + x + (s === 1 ? 12 : 0)], 0.4]); });
+        Bs.push([8, [base - 24], 1.4]);
+        return { bpm, len: 12, tr: [
+          { i: 'lead', v: 0.17, ev: L }, { i: 'arp', v: 0.04, ev: A }, { i: 'bass', v: 0.4, ev: Bs },
+          { d: { h: 'x.x.x.x.' }, st: 0.25, v: 0.4 }, { d: { k: 'x.......x.......x.......', s: '....x.......x.......x.xx', h: 'x.x.x.x.x.x.x.x.x.x.x.x.' }, at: 2, v: 0.5 },
+          { i: 'arp', v: 0.06, ev: [[10.75, [top + 11], 0.08], [10.85, [top + 16], 0.6]] }, ...outro(8, 0.4),
+        ] };
+      },
+      funk(g) {   // slap bass and clavinet in 16ths, a brass call and its answer, then the band stops for the hits
+        const bpm = 96 + g.ri(5) * 4, R = g.reg(36), mi = g.r() < 0.6, H = R + 24;
+        const tpl = g.pr(['R..O.R.gR.O..R.g', 'R.gR..O.R.5.O.7.', 'R..R.OgR..R.O.g7', 'R.O.gRO.R..5.7O.', 'R...O.gRR.O.5.O.']), iv = { R: 0, O: 12, g: 0, 5: 7, 7: 10 };
+        const Bs = [], Gh = [];
+        for (let bar = 0; bar < 2; bar++) [...tpl].forEach((c, s) => { if (c === '.') return; const e = [bar * 4 + s / 4, [R + iv[c] + (bar && s >= 12 && c !== 'g' ? 5 : 0)], c === 'g' ? 0.06 : c === 'O' ? 0.14 : 0.22]; (c === 'g' ? Gh : Bs).push(e); });
+        const voic = mi ? [H + 3, H + 7, H + 10] : [H + 4, H + 10, H + 14], cpat = g.pr(['.x.x..x..x.x..x.', '..x...x...x.x.x.', '.xx..x.x.xx..x..', 'x..x.x..x.xx.x..']);
+        const C = []; for (let bar = 0; bar < 2; bar++) [...cpat].forEach((c, s) => { if (c === 'x') C.push([bar * 4 + s / 4, voic, 0.1]); });
+        const pos = g.pr([[1.5, 1.75, 2.5], [0.5, 0.75, 3], [2.5, 2.75, 3.25, 3.5], [1, 1.5, 1.75, 3]]), top = mi ? [H + 7, H + 10] : [H + 10, H + 14];
+        const Br = []; pos.forEach((b, j) => { const last = j === pos.length - 1; Br.push([b, top, last ? 0.6 : 0.18]); Br.push([b + 4, top.map(x => x + (last ? -2 : 2)), last ? 0.6 : 0.18]); });
+        const hit = [R + 12, R + 16, R + 22, R + 27];
+        return { bpm, len: 12, tr: [
+          { i: 'bass', v: 0.4, ev: Bs }, { i: 'slap', v: 0.12, ev: Bs }, { i: 'slap', v: 0.06, ev: Gh }, { i: 'clav', v: 0.05, ev: C }, { i: 'brass', v: 0.12, tr: -12, ev: Br },
+          { d: { k: g.pr(['x..x..x...x..x..', 'x.x...x..x..x...', 'x..x...xx.....x.']), s: '....x..o.o..x..o', h: g.pr(['xoxoxoxoxoxoxoxo', 'x.xox.xox.xox.xo']) }, rep: 2, v: 0.55 },
+          { i: 'brass', v: 0.15, tr: -12, ev: [[8, hit, 0.3], [8.75, hit, 0.2], [9.5, hit, 1.6]] }, { i: 'bass', v: 0.4, ev: [[8, [R], 0.3], [8.75, [R], 0.2], [9.5, [R], 1.5]] },
+          { d: { cb: 'x..x..x.' }, st: 0.25, at: 8, v: 0.4 }, { d: { k: 'x..x', s: 'x..x' }, st: 0.25, at: 8, v: 0.5 }, ...outro(9.5),
+        ] };
+      },
+      fanfare(g) {   // a march: snare roll and timpani, a trumpet call on the tonic answered on the dominant, oom-pah tuba, big final chord
+        g.k = g.pr([10, 3, 5, 0, 7]); const bpm = 108 + g.ri(5) * 4, base = g.reg(60), roll = g.r() < 0.6 ? 2 : 1;
+        const LI = [-5, 0, 4, 7, 12, 16, 19], LV = [-5, -1, 2, 7, 11, 14, 19];
+        const rh = g.pr([[0.75, 0.25, 1, 1, 1], [0.5, 0.5, 0.5, 0.5, 2], [1 / 3, 1 / 3, 1 / 3, 1, 1, 1], [1, 0.75, 0.25, 2], [0.75, 0.25, 0.75, 0.25, 2]]);
+        const idx = wline(g, rh, roll, g.pr([1, 2, 3]), [1, 1, 2, -1, 1, -2], 1, 6), Tp = [], Hn = [];
+        for (const [half, L] of [[0, LI], [4, LV]]) for (const [b, i, d] of idx) { Tp.push([b + half, [base + L[i]], d]); Hn.push([b + half, [base + L[Math.max(0, i - 1)]], d]); }
+        const Tu = []; for (let b = 0; b < 8; b++) { const r = b < 4 ? 0 : 7; Tu.push([roll + b, [base - 24 + r + (b % 2 ? 7 : 0) - (r && b % 2 ? 12 : 0)], 0.45]); }
+        const E = roll + 8;
+        return { bpm, len: E + 4, tr: [
+          { d: { s: 'o'.repeat(roll * 8 - 2) + 'xX' }, st: 0.125, v: 0.4 }, { i: 'timp', v: 0.45, ev: Array.from({ length: roll * 4 }, (_, j) => [j * 0.25, [base - 17], 0.25]) },
+          { i: 'brass', v: 0.15, ev: Tp }, { i: 'brass', v: 0.09, tr: -12, ev: Hn }, { i: 'brass', v: 0.1, ev: Tu },
+          { d: { s: 'x.xxx.x.x.xxx.xx', k: 'x...x...x...x...' }, rep: 2, at: roll, v: 0.38 }, { d: { x: 'x' }, at: roll, v: 0.3 },
+          { i: 'brass', v: 0.13, ev: [[E, [base, base + 4, base + 7, base + 12], 2.6], [E, [base - 24], 2.6]] }, { i: 'lead', v: 0.07, ev: [[E, [base + 16], 2.6]] },
+          { i: 'timp', v: 0.4, ev: [[E, [base - 12], 1.2], ...Array.from({ length: 8 }, (_, j) => [E + 1 + j * 0.25, [base - 12], 0.25])] }, ...outro(E),
+        ] };
+      },
+      organ(g) {   // the ballpark organist: a call, two crowd claps, the call again higher, a chromatic climb to the big chord. Or a ballpark waltz.
+        const base = g.reg(72), O = [], P = [];
+        if (g.r() < 0.3) {   // waltz in 3
+          const prog = g.pr([[0, 7, 7, 0], [0, 5, 7, 0], [0, 9, 2, 7]]), mel = [];
+          let i = g.pr([4, 2, 7]);
+          prog.forEach((x, bar) => { const rh = bar === 3 ? [3] : g.pr([[2, 1], [1, 1, 1], [1.5, 0.5, 1]]); let b = bar * 3; for (const d of rh) { if (bar === 3) i = 7; mel.push([b, [dg(SCL.maj, base, i)], d]); b += d; i = cl(i + g.pr([-2, -1, 1, 2]), 0, 9); } });
+          const nm = x => PCN[(g.k + x) % 12] + ([2, 9].includes(x) ? 'm' : '') + ':3';
+          return { bpm: 150 + g.ri(5) * 4, len: 15, organ: 1, tr: [
+            { i: 'organ', v: 0.18, tr: -12, ev: mel }, { i: 'organm', v: 0.07, ch: prog.map(nm).join(' '), st: 'w23' }, { i: 'pedal', v: 0.3, ch: prog.map(nm).join(' '), st: 'bw' },
+            { i: 'organ', v: 0.16, tr: -12, ev: [[12, [base, base + 4, base + 7, base + 12], 2.6]] }, { i: 'pedal', v: 0.3, ev: [[12, [36 + g.k], 2.6]] }, { i: 'smp', s: 'clap', b: [12.5], v: 0.3 }, ...outro(12),
+          ] };
+        }
+        const call = g.pr([[0.5, 0.5, 0.5, 0.5], [0.25, 0.25, 0.5, 1], [0.5, 0.5, 1], [1 / 3, 1 / 3, 1 / 3, 1], [0.5, 0.25, 0.25, 1]]), up = g.pr([5, 2, 7]), cells = 2;
+        const ln = wline(g, call, 0, g.pr([0, 2, 4]), [1, 1, 2, 1, -1]);
+        for (let c = 0; c < cells; c++) for (const [b, i, d] of ln) O.push([c * 4 + b, [dg(SCL.maj, base, i) + up * c], d]);
+        const claps = []; for (let c = 0; c < cells; c++) claps.push(c * 4 + 2, c * 4 + 3);
+        const E = cells * 4, top = base + 12; for (let j = 0; j < 8; j++) O.push([E + j * 0.25, [top - 8 + j], 0.22]);
+        O.push([E + 2, [base, base + 4, base + 7, base + 12], 2.6]); P.push([0, [36 + g.k], 1.8], [4, [36 + g.k + up - (up > 6 ? 12 : 0)], 1.8], [E + 2, [36 + g.k], 2.6]);
+        return { bpm: 120 + g.ri(7) * 4, len: E + 6, organ: 1, tr: [
+          { i: 'organ', v: 0.19, tr: -12, ev: O }, { i: 'pedal', v: 0.3, ev: P },
+          { i: 'smp', s: 'clap', b: claps, v: 0.4 }, { d: { c: lane(4 * E, claps.map(b => [b * 4, 'X'])) }, v: 0.5 },
+          { d: { k: 'x...x...', s: '....x.xX' }, st: 0.25, at: E, v: 0.4 }, { i: 'smp', s: 'chant', b: [E + 2.4], v: 0.4 }, ...outro(E + 2),
+        ] };
+      },
+      hiphop(g) {   // boom-bap: a record scratch, a swung beat, a minor bell loop over 808s, an air horn to finish
+        const bpm = 92 + g.ri(4) * 4, sc = g.pr([SCL.pm, SCL.hm, SCL.dor]), base = g.reg(64), R = g.reg(33), ins = g.pr(['bell', 'mar', 'steel']);
+        const rh = g.pr([[0.5, 0.5, 0.5, 0.5, 1, 1], [0.75, 0.75, 0.5, 1, 1], [0.5, 0.25, 0.25, 0.5, 0.5, 1, 1], [1, 0.5, 0.5, 1, 1]]);
+        const m1 = wline(g, rh, 1, g.pr([0, 2, 4]), [-1, 1, -2, 2, 0]), m2 = m1.map(([b, i, d], j) => [b + 4, j >= m1.length - 2 ? cl(i + g.pr([-2, -1, 1, 2]), -2, 8) : i, d]);
+        const bp = g.pr([[[0, 0, 1.4], [1.5, 0, 0.5], [2.5, 0, 1.4]], [[0, 0, 0.7], [0.75, 0, 0.7], [2, 1, 1.8]], [[0, 0, 2.2], [2.5, 1, 0.5], [3, 2, 0.9]]]), sx = [0, g.pr([3, 5, 7, -2]), g.pr([-2, -5, 3])];
+        const S8 = []; for (let bar = 0; bar < 2; bar++) for (const [b, n, d] of bp) S8.push([1 + bar * 4 + b, [R + sx[n] + 12], d]);
+        const stab = g.r() < 0.5, hn = [base, base + 3, base + 7];
+        const T = [
+          { d: { sc: 'xx' }, st: 0.5, v: 0.5 }, { i: ins, v: ins === 'mar' ? 0.26 : ins === 'steel' ? 0.2 : 0.18, ev: [...wnotes(sc, base, m1), ...wnotes(sc, base, m2)] }, { i: 'sub', v: 0.42, ev: S8 },
+          { d: { k: g.pr(['x......x..x.....', 'x..x....x..x..x.', 'x.....x...x.....', 'x......xx.x.....']), s: '....x.......x...', h: g.pr(['x.x.x.x.x.x.x.x.', 'x.x.x.xox.x.x.xo']) }, rep: 2, at: 1, v: 0.6 },
+          { d: { sc: 'x.x' }, st: 0.25, at: 8.25, v: 0.4 },
+          { i: 'brass', v: 0.13, ev: [[9, [77, 78], 0.2], [9.25, [77, 78], 0.2], [9.5, [77, 78], 0.2], [9.75, [77, 78], 1.1]] }, ...outro(9),
+        ];
+        if (stab) T.push({ i: 'brass', v: 0.1, tr: -12, ev: [[1, hn, 0.35], [5, hn, 0.35], [7.5, hn.map(x => x - 2), 0.35]] });
+        return { bpm, len: 12, swing: 0.6, tr: T };
+      },
+      stomp(g) {   // stadium chant: stomp-stomp-clap with the whole crowd, guitar or horns filling the gaps, tom roll, one huge hit
+        const bpm = 80 + g.ri(4) * 4, R = g.reg(40), cyc = 3, gtrs = g.r() < 0.5, walk = g.pr([[0, 3, 5, 7], [0, 5, 7, 10], [0, 3, 0, 5], [7, 5, 3, 0]]);
+        const claps = Array.from({ length: cyc }, (_, j) => j * 2 + 1), F = [];
+        for (let j = 1; j < cyc; j++) { const n = R + walk[j], b = j * 2 + 1.5; F.push([b, gtrs ? [n, n + 7, n + 12] : [n + 24, n + 28, n + 31], 0.4]); }
+        const E = cyc * 2;
+        return { bpm, len: E + 4, tr: [
+          { d: { k: 'XX..', c: '..X.' }, st: 0.5, rep: cyc, v: 0.75 }, { d: { tf: 'xx..' }, st: 0.5, rep: cyc, v: 0.4 }, { i: 'smp', s: 'clap', b: claps, v: 0.45 }, { i: 'smp', s: 'chant', b: [E - 2.1], v: 0.4 },
+          { i: gtrs ? 'gtr' : 'brass', v: gtrs ? 0.08 : 0.13, ev: F },
+          { d: { th: 'x.x.', tl: '.x.x', tf: '....' }, st: 0.25, at: E, v: 0.5 }, { d: { s: 'xxxX' }, st: 0.25, at: E, v: 0.4 },
+          { i: 'gtr', v: 0.08, ev: [[E + 1, [R, R + 7, R + 12, R + 19], 2.6]] }, { i: 'brass', v: 0.12, ev: [[E + 1, [R + 24, R + 28, R + 31, R + 36], 2.6]] }, { i: 'bass', v: 0.4, ev: [[E + 1, [R], 2.4]] }, ...outro(E + 1, 0.6),
+        ] };
+      },
+      surf(g) {   // surf rock: tom roll, a tremolo-picked line in a dark scale, galloping bass, and the long slide down the neck
+        const bpm = 152 + g.ri(6) * 4, sc = g.pr([SCL.hm, SCL.pm, SCL.dor]), base = g.reg(64), R = g.reg(40), I = g.r() < 0.5 ? 2 : 0;
+        const ln = wline(g, g.pr([[2, 2, 2, 2], [1, 1, 2, 2, 2], [2, 1, 1, 4], [1, 1, 1, 1, 2, 2]]), I, g.pr([4, 7, 6]), [-1, -1, -2, 1, -1, 2], -1, 9), L = [];
+        for (const [b, i, d] of ln) for (let x = 0; x < d; x += 0.25) L.push([b + x, [dg(sc, base, i)], 0.2]);
+        const bp = g.pr([[0, 0, 7, 7], [0, 0, 3, 5], [0, 7, 10, 7], [0, 0, 0, 7]]), Bs = [];
+        for (let q = 0; q < 8; q++) for (const h of [0, 0.5]) Bs.push([I + q + h, [R + bp[q % 4] + 12], 0.4]);
+        const top = dg(sc, base, ln[ln.length - 1][1]) + 12, E = I + 8;
+        for (let j = 0; j < 16; j++) L.push([E + j * 0.125, [top - j], 0.12]);
+        return { bpm, len: E + 5, tr: [
+          ...(I ? [{ d: { th: 'x.x.x.x.', tl: '.x.x.x.x' }, st: 0.25, v: 0.4 }, { d: { tf: 'xxxX' }, st: 0.25, at: 1, v: 0.45 }] : []),
+          { i: 'surf', v: 0.13, ev: L }, { i: 'bass', v: 0.38, ev: Bs },
+          { d: { k: 'x...x...x...x...', s: '....x.......x...', th: '..........x....x' }, rep: 2, at: I, v: 0.5 },
+          { i: 'surf', v: 0.16, ev: [[E + 2, [R + 12, R + 19, R + 24], 2.5]] }, { i: 'bass', v: 0.4, ev: [[E + 2, [R + 12], 2.4]] }, ...outro(E + 2),
+        ] };
+      },
+      latin(g) {   // salsa: clave, cowbell and shaker, a syncopated piano montuno, anticipated tumbao bass, mambo horns, a timbale roll
+        const bpm = 104 + g.ri(5) * 4, mi = g.r() < 0.6, base = g.reg(60), R = g.reg(36), ins = g.pr(['clav', 'mar', 'steel']);
+        const prog = mi ? [0, 5, 7, 5] : [0, 5, 7, 5], isMin = x => mi && x !== 7, mt = g.pr(['.x.xx.x.', 'x.xx.x.x', '.xx.x.xx']), M = [], Bs = [];
+        prog.forEach((x, j) => { const ch = tri(base + x - (x > 6 ? 12 : 0), isMin(x)), nt = [ch[0] + 12, ch[1], ch[2], ch[0] + 12, ch[1] + 12, ch[2], ch[0] + 12, ch[1]]; [...mt].forEach((c, s) => { if (c === 'x') M.push([j * 2 + s * 0.25, [nt[s], nt[s] - 12], 0.2]); }); });
+        for (let bar = 0; bar < 2; bar++) { const a = prog[bar * 2], b = prog[bar * 2 + 1]; Bs.push([bar * 4 + 1.5, [R + b], 1.4], [bar * 4 + 3, [R + b + 7 - 12], 0.9]); if (!bar) Bs.unshift([0, [R + a], 1.4]); }
+        const hp = g.pr([[0.5, 1, 2.5], [1.5, 2, 3.5], [0.5, 1.5, 2.5, 3.5], [0, 0.75, 1.5]]), hn = mi ? [base + 7, base + 15] : [base + 7, base + 16], Hr = hp.map(b => [4 + b, hn, 0.28]);
+        return { bpm, len: 12, tr: [
+          { i: ins, v: ins === 'clav' ? 0.07 : 0.11, ev: M }, { i: 'bass', v: 0.42, ev: Bs }, { i: 'brass', v: 0.13, ev: Hr },
+          { d: { cl: g.pr(['x..x..x...x.x...', '..x.x...x..x..x.']), cb: 'X.x.X.x.X.x.X.x.' }, st: 0.5, v: 0.45 }, { d: { sk: 'xoxoxoxoxoxoxoxo', k: '...x.......x....' }, rep: 2, v: 0.5 },
+          { d: { th: 'x.xx', tl: '.x..' }, st: 0.25, at: 8, v: 0.5 }, { d: { th: 'xxxX', tl: 'x..x' }, st: 0.125, at: 8.5, v: 0.5 },
+          { i: 'brass', v: 0.15, ev: [[9, [base, base + (mi ? 3 : 4), base + 7, base + 12], 2]] }, { i: 'bass', v: 0.42, ev: [[9, [R], 2]] }, { d: { cb: 'X' }, at: 9, v: 0.5 }, ...outro(9),
+        ] };
+      },
+      synthwave(g) {   // 80s neon: a noise riser into gated drums, supersaw chords, a sixteenth arpeggio and a long saw lead
+        const bpm = 104 + g.ri(4) * 4, R = g.reg(45), base = g.reg(69), I = 1;
+        const prog = g.pr([[0, 8, 3, 10], [0, 10, 8, 10], [0, 8, 5, 10], [0, 3, 10, 8]]), isMin = x => x === 0 || x === 5, P = [], A = [], Bs = [];
+        prog.forEach((x, j) => { const ch = tri(base - 12 + x - (x > 6 ? 12 : 0), isMin(x)), b = I + j * 2; P.push([b, ch, 2]); const ar = [ch[0], ch[1], ch[2], ch[0] + 12]; for (let s = 0; s < 8; s++) A.push([b + s * 0.25, [ar[s % 4] + 12], 0.2]); for (let s = 0; s < 4; s++) Bs.push([b + s * 0.5, [R + (x > 6 ? x - 12 : x) + (s % 2 ? 12 : 0)], 0.4]); });
+        const ln = wline(g, g.pr([[2, 1, 1, 2, 2], [1.5, 0.5, 2, 2, 2], [3, 1, 2, 2], [1, 1, 2, 1, 1, 2]]), I, g.pr([2, 4, 5]), [-1, 1, -2, 2, 1]);
+        const E = I + 8;
+        return { bpm, len: E + 4, tr: [
+          { i: 'rise', v: 0.3, ev: [[0, [60], 1.1]] }, { i: 'spad', v: 0.05, ev: [[0, tri(base - 12, 1), 1]] },
+          { i: 'spad', v: 0.05, ev: P }, { i: 'saw', v: 0.035, ev: A }, { i: 'bass', v: 0.36, ev: Bs }, { i: 'saw', v: 0.07, ev: wnotes(SCL.pm, base, ln) },
+          { d: { k: 'x...x...x...x...', gs: '....x.......x...', h: '..x...x...x...x.' }, rep: 2, at: I, v: 0.55 },
+          { i: 'spad', v: 0.06, ev: [[E, tri(base - 12, 1), 3]] }, { i: 'saw', v: 0.07, ev: [[E, [base + 12], 2.6]] }, { i: 'sub', v: 0.4, ev: [[E, [R], 2.4]] }, ...outro(E),
+        ] };
+      },
+      shuffle(g) {   // blues shuffle: boogie-woogie bass in swung triplets, organ on the offbeats, a brass blues riff, a turnaround lick
+        const bpm = 110 + g.ri(5) * 4, R = g.reg(40), base = g.reg(60), t3 = 2 / 3;
+        const bg = g.pr([[0, 4, 7, 9, 10, 9, 7, 4], [0, 0, 4, 4, 7, 7, 9, 7], [0, 4, 7, 4, 9, 7, 10, 9], [0, 7, 9, 7, 10, 9, 7, 4]]), Bs = [], C = [];
+        for (let bar = 0; bar < 2; bar++) { const s = bar ? 5 : 0; bg.forEach((x, j) => Bs.push([bar * 4 + (j >> 1) + (j & 1 ? t3 : 0), [R + s + x + 12], j & 1 ? 0.3 : 0.6])); for (let q = 0; q < 4; q++) C.push([bar * 4 + q + t3, [base - 12 + s + 4, base - 12 + s + 7, base - 12 + s + 10], 0.28]); }
+        const rf = wline(g, g.pr([[t3, 1 / 3, t3, 1 / 3, 1], [1 / 3, 1 / 3, 1 / 3, 1, 1], [1, t3, 1 / 3, 1]]), 0, g.pr([3, 4, 5]), [-1, -1, 1, -2, 2], 0, 8);
+        const Lk = [...wnotes(SCL.blu, base, rf), ...wnotes(SCL.blu, base, rf.map(([b, i, d]) => [b + 4, i, d]))];
+        const lick = Array.from({ length: 6 }, (_, j) => [9 + j / 3, [dg(SCL.blu, base, 6 - j)], 0.3]);
+        return { bpm, len: 14, organ: 1, tr: [
+          { i: 'bass', v: 0.4, ev: Bs }, { i: 'organm', v: 0.07, ev: C }, { i: 'brass', v: 0.14, tr: -12, ev: [...Lk, ...lick] },
+          { d: { k: 'x.....x.....', s: '...x.....x..', h: 'x.xx.xx.xx.x' }, st: 1 / 3, rep: 2, v: 0.5 },
+          { i: 'brass', v: 0.14, tr: -12, ev: [[8, [base + 7, base + 11, base + 17], 0.6], [11, [base, base + 4, base + 10, base + 14], 2.2]] },
+          { i: 'bass', v: 0.4, ev: [[8, [R + 19], 0.6], [11, [R + 12], 2]] }, { d: { s: 'x..x', k: 'x...' }, st: 1 / 3, at: 8, v: 0.45 }, ...outro(11),
+        ] };
+      },
+    };
+    function walkSong(name, style, seed) {   // style: a genre to force it; seed: a new tune for the same player
+      let h = 2166136261; for (const ch of String(name || 'Bulls') + (seed ? '#' + seed : '')) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
       const r = mulberry32(h >>> 0), ri = n => (r() * n) | 0, pr = a => a[ri(a.length)];
-      const key = pr([0, 2, 3, 5, 7, -2, -4]), st = STY[ri(STY.length)], minor = r() < 0.3, bpm = 116 + ri(9) * 4, pc = ((key % 12) + 12) % 12;
-      const sc = minor ? [0, 3, 5, 7, 10] : [0, 2, 4, 7, 9], deg = i => 72 + key + 12 * Math.floor(i / 5) + sc[((i % 5) + 5) % 5];
-      const pg = pr(minor ? [[0, 'm', 5, 'm', 10, '', 7, ''], [0, 'm', 8, '', 10, '', 0, 'm'], [0, 'm', 3, '', 10, '', 7, '']] : [[0, '', 5, '', 7, '', 0, ''], [0, '', 10, '', 5, '', 0, ''], [0, '', 9, 'm', 5, '', 7, ''], [0, '', 7, '', 5, '', 0, '']]);
-      const ch = [0, 2, 4, 6].map(j => PCN[(pc + pg[j]) % 12] + pg[j + 1] + ':2').join(' ');
-      const rh = pr(RH); let i = pr([0, 2, 4, 5]);
-      const m1 = rh.map((d, j) => { if (j) i = cl(i + pr([-2, -1, 1, 1, 2, 2, 3, -3]), -2, 9); return i; });
-      const sh = pr([1, -1, 2, 0, 3]), m2 = m1.map(x => x + sh), last = m2[m2.length - 2];
-      m2[m2.length - 1] = [0, 5, 10].reduce((a, b) => Math.abs(b - last) < Math.abs(a - last) ? b : a);
-      const mel = []; for (const [ms, b0] of [[m1, 0], [m2, 4]]) { let b = b0; rh.forEach((d, j) => { mel.push([b, [deg(ms[j])], d]); b += d; }); }
-      mel.push([8, [72 + key, 72 + key + (minor ? 3 : 4), 79 + key], 1.2]);
-      const T = st.lead.map(([ins, v, tp]) => ({ i: ins, v, tr: tp, ev: mel }));
-      const bi = st.bi || 'bass', btr = st.bi ? 0 : 12, bv = st.bi ? 0.3 : 0.38;
-      T.push({ i: bi, v: bv, tr: btr, ch, st: st.bass }, { i: bi, v: bv, tr: btr, ev: [[8, [36 + pc], 1.2]] });
-      if (st.comp) T.push({ i: st.comp[0], v: st.comp[2], ch, st: st.comp[1] });
-      if (st.arp) T.push({ i: 'arp', v: 0.045, ch, st: 'arp' });
-      T.push({ d: st.dr, rep: 2, v: 0.55 }, { d: { x: 'X', k: 'x' }, v: 0.45 }, { d: { x: 'X', k: 'x' }, at: 8, v: 0.55 }, { i: 'cheer', b: [8.3], v: 0.35 });
-      return compile({ bpm, len: 10, pri: 2, prot: 2, q: 1, duck: 0.5, organ: st.lead[0][0] === 'organ' || st.comp ? 1 : 0, tr: T, style: st.name, key, minor });
+      const auto = WALKS[ri(WALKS.length)], st = WALKS.includes(style) ? style : auto;
+      const g = { r, ri, pr, k: ri(12), reg: lo => lo + (((g.k - lo) % 12) + 12) % 12 };
+      const s = WG[st](g);
+      return compile(Object.assign({ pri: 2, prot: 2, q: 1, duck: 0.5, organ: 0, style: st, key: g.k }, s));
     }
 
     // ---------------- sequencer: one cue at a time ----------------
@@ -2727,7 +2993,11 @@ const BL = (function makeBullsLib(HOST) {
       else { const L = favUp ? ['letsgo', 'charge', 'vamp1', 'letsgo', 'vamp2'] : ['vamp2', 'vamp1', 'letsgo']; name = L[(S.brk = (S.brk || 0) + 1) % L.length]; }
       cue(name); applause(favUp ? 0.35 : 0.5);
     }
+    // a player's walk-up tune: his own (from his name), or the style and shuffle he picked in Teams & Players
+    function walkFor(p) { const w = p.walk && p.walk !== 'off' ? p.walk : {}, nm = p.name || String(p.id), k = nm + '|' + (w.style || '') + '|' + (w.seed || 0);
+      if (w.style === 'opera') return getSong('opera'); return (S.walks || (S.walks = {}))[k] || (S.walks[k] = walkSong(nm, w.style && w.style !== 'auto' ? w.style : null, w.seed || 0)); }
     function onEvent(kind, d) {
+      if (kind === 'walk-preview') { if (ctx && S.M && d.player && d.player.walk !== 'off') { if (S.cue) fade(S.cue, 0.2); S.cue = null; cue('walk', { song: walkFor(d.player), again: true }); } return; }
       if (kind === 'menu') { if (ctx && (!S.cue || S.cue.name !== 'title')) cue('title'); return; }
       if (kind === 'game-start') { S.lastWalk = null; S.brk = 0; if (ctx) cue('playball'); return; }
       if (!ctx || !S.M || !SETTINGS.sound) return;
@@ -2735,9 +3005,9 @@ const BL = (function makeBullsLib(HOST) {
       const C = S.M.cr, t = now();
       switch (kind) {
         case 'at-bat':
-          if (d.isUser && d.first && d.player) { const id = d.player.id || d.player.name; if (S.lastWalk !== id || t - S.lastWalkT > 25) { S.lastWalk = id; S.lastWalkT = t; const nm = d.player.name || String(id); cue('walk', { song: (S.walks || (S.walks = {}))[nm] || (S.walks[nm] = walkSong(nm)), again: true }); } }
+          if (d.isUser && d.first && d.player && d.player.walk !== 'off') { const id = d.player.id || d.player.name; if (S.lastWalk !== id || t - S.lastWalkT > 25) { S.lastWalk = id; S.lastWalkT = t; cue('walk', { song: walkFor(d.player), again: true }); } }
           break;
-        case 'pitch': S.queue = null; if (S.cue) fade(S.cue, 0.5); C.fly = 0; break;
+        case 'pitch': S.queue = null; if (S.cue && S.cue.name !== 'walk') fade(S.cue, 0.5); C.fly = 0; break;   // the walk-up song plays out under the at-bat
         case 'hit': C.hit = { t, q: d.q || 0 }; break;
         case 'call': {
           const fb = favBat();
@@ -2819,7 +3089,7 @@ const BL = (function makeBullsLib(HOST) {
       return buf;
     }
     const api = {
-      S, VOICE, SONGS, render, walkSong, getSong, cue, sfx, onEvent, say, step, vols,
+      S, VOICE, SONGS, WALKS, render, walkSong, getSong, cue, sfx, onEvent, say, step, vols,
       at: (t, f) => { S.tOff = t; f(); S.tOff = 0; },
       cheer: (a, t) => cheer(a, t), groan, ooh, applause, whistle: (t, a) => whistle(t, a), bounce: (x, y, s) => bounce(x, y, s), fence: x => fence(x), isDirt,
       notes: n => { const s = n === 'walk' ? null : getSong(n); return s && s.ev.map(e => [e[0], e[1], e[2], e[3]]); },
@@ -6354,7 +6624,7 @@ if (SETTINGS.voice) voiceStart();
 showTitle();
 requestAnimationFrame(frame);
 // test hooks
-window.BBB = { ACT, FIGH, BL, THREE, figHeight, fit, camStep, syncActors, renderer, scene, camera, frame: t => frame(t), projectPt: (x, y) => { const q = project(x, y, 0), r = canvas.getBoundingClientRect(); return { x: r.left + q.x, y: r.top + q.y }; }, get PROG() { return PROG; }, finishRep, tryAgain, ACH, progCheck, posStat, sits, showTrophies, startPractice, startSession, nextPlay, showBook, showTitle, roundStart, COACH, coachTick, FOCUS, focusPos, pickPlay, buildQueue, DRAW, drawGroup, CAM, force: (id, pos, seed = 1) => { $('ui').hidden = true; APP.reps = []; APP.total = 0; APP.n = 0; APP.first = []; newRep(null, { spec: buildSpec(PLAYS.find(p => p.id === id), G, seed), pos }); }, PLAYS, POS, buildSpec, dryRun, evalTime, Sim, scoreRep, makeGeo, get G() { return G; }, set G(v) { G = v; }, APP, SETTINGS, parseCalls, posMetric };
+window.BBB = { setupScore, setupStep, Sim, scoreRep, evalTime, ACT, FIGH, BL, THREE, figHeight, fit, camStep, syncActors, renderer, scene, camera, frame: t => frame(t), projectPt: (x, y) => { const q = project(x, y, 0), r = canvas.getBoundingClientRect(); return { x: r.left + q.x, y: r.top + q.y }; }, get PROG() { return PROG; }, finishRep, tryAgain, ACH, progCheck, posStat, sits, showTrophies, startPractice, startSession, nextPlay, showBook, showTitle, roundStart, COACH, coachTick, FOCUS, focusPos, pickPlay, buildQueue, DRAW, drawGroup, CAM, force: (id, pos, seed = 1) => { $('ui').hidden = true; APP.reps = []; APP.total = 0; APP.n = 0; APP.first = []; newRep(null, { spec: buildSpec(PLAYS.find(p => p.id === id), G, seed), pos }); }, PLAYS, POS, buildSpec, dryRun, evalTime, Sim, scoreRep, makeGeo, get G() { return G; }, set G(v) { G = v; }, APP, SETTINGS, parseCalls, posMetric };
 
 </script>
 </body>
