@@ -314,7 +314,7 @@ import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.m
 window.__BBB_OK = true;
 
 // ---------------- math ----------------
-const VERSION = 'v6.8';
+const VERSION = 'v6.9';
 const D2R = Math.PI / 180;
 const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -340,10 +340,11 @@ const TRAIN = window.BBB_TRAIN || null;   // set by Bulls Baseball when it opens
 const SETTINGS = { colors: 'bulls', talk: true, vs: false, names: ['Player 1', 'Player 2'], focus: 'all', field: 'll', speed: 1, clock: 0, cutoff: 'middle', hand: 'R', voice: false, view: 'full', reps: 10, landing: true, pos: 'SS', everyone: true, ft: 'cut', coach: false, order: 'random', setup: true, level: 'easy' };
 try { Object.assign(SETTINGS, JSON.parse(localStorage.getItem(SET_KEY) || '{}')); } catch (e) { }
 // v5.7 defaults: game speed, and the middle infielders as cutoffs on Easy (applied once to saved settings)
-if (!(SETTINGS.sv >= 2)) { SETTINGS.speed = 1; if ((SETTINGS.level || 'easy') === 'easy') SETTINGS.cutoff = 'middle'; SETTINGS.sv = 2; }
+if (!(SETTINGS.sv >= 2)) { SETTINGS.speed = 1; SETTINGS.sv = 2; }
+if (!(SETTINGS.sv >= 3)) { SETTINGS.cutoff = 'middle'; SETTINGS.sv = 3; }   // v6.9: middle infielders are the cutoffs by default at every level
 // Training camp (opened by Bulls Baseball): this player, this position, a short round, and nothing saved over the trainer's own settings
 if (TRAIN) Object.assign(SETTINGS, { field: 'll', pos: TRAIN.pos || 'SS', focus: 'all', reps: TRAIN.reps || 5, order: 'random', level: TRAIN.level || SETTINGS.level || 'easy', hand: TRAIN.player && TRAIN.player.throws === 'L' ? 'L' : 'R', vs: false, coach: false, setup: true });
-if (TRAIN && SETTINGS.level === 'easy') SETTINGS.cutoff = 'middle';
+if (TRAIN) SETTINGS.cutoff = 'middle';   // Training Camp always uses the middle infielders as cutoffs
 const saveSettings = () => { if (TRAIN) return; try { localStorage.setItem(SET_KEY, JSON.stringify(SETTINGS)); } catch (e) { } };
 
 // ---------------- baseball vocabulary ----------------
@@ -1906,6 +1907,8 @@ function optLabel(id) {
   const L = { b1: 'first', b2: 'second', b3: 'third', b4: 'home', p: 'the pitcher', hold: 'hold it', thru: 'let it go through', cut_hold: 'cut it and hold', step1_2: 'step on first, then throw to second', step3_1: 'step on third, then throw to first', step3: 'step on third', timeout: 'no decision' };
   return L[id] || id;
 }
+// did a throw come along this cutoff man's line (to the base he is the cutoff for)?
+function cutThrowCame(sim, me) { const rf = sim.s.relayFor || {}; const ks = Object.keys(rf).filter(k => rf[k] === me).map(k => +k === 4 ? 0 : +k); if (!ks.length) return true; return sim.throws.some(t => ks.includes(t.base)); }
 function scoreRep(sim, dry) {
   const s = sim.s, me = sim.me, job = s.jobs[me], G = sim.G, E = dry.E;
   const parts = [], notes = [];
@@ -1952,6 +1955,9 @@ function scoreRep(sim, dry) {
     const v = ch === 'timeout' ? 0 : corr.includes(ch) || outHere ? 1 : (d.ok || []).includes(ch) ? 0.5 : 0;
     if (v < 1 && (sim.res.outPlays || []).length) notes.push(`You had an out at ${(sim.res.outPlays || []).map(o => optLabel(o)).join(' or ')} on that throw.`);
     parts.push({ id: 'throw', w: 25, v, label: outHere ? `${cap(optLabel(ch))}. The out was there and you took it (the textbook throw was ${optLabel(corr[0])})` : v === 1 ? cap(optLabel(ch)) : v === 0.5 ? `${cap(optLabel(ch))}. OK, but ${optLabel(corr[0])} was better` : `${cap(optLabel(ch))}. The play was ${optLabel(corr[0])}`, why: d.why, corr: corr[0], ch });
+  } else if (d && !sim.res.decided && job.kind === 'cutoff' && d.kind === 'cutoff' && !cutThrowCame(sim, me)) {
+    // the throw went somewhere else (the catcher went to third on a first-and-third): nothing to cut, so no throw grade
+    const t0 = sim.throws.find(t => t.from !== me); if (t0) notes.push(`The ${PL[t0.from] || t0.from} threw to ${t0.base === 0 ? 'home' : BN[t0.base] || 'another base'}, so no throw came your way. Holding your cut spot was right.`);
   } else if (d && !sim.res.decided && job.kind === 'cutoff' && d.kind === 'cutoff') parts.push({ id: 'throw', w: 25, v: 0, label: 'Not lined up: the throw went past you to the base, so you could not cut it or let it through', why: 'The outfielder throws to the base. The cutoff man has to be on that line, a step off the ball\'s path, to cut it.', corr: sim.correctOf(d)[0], ch: 'none' });
   else if (d && !sim.res.decided && job.kind === 'cutoff') notes.push('The throw never came to you because you were not lined up, so it had to go all the way to the base.');
   // calls
@@ -6422,7 +6428,6 @@ function bindSeg(ui) {
     const k = b.dataset.k; let v = b.dataset.v;
     if (k === 'speed' || k === 'clock') v = +v; if (k === 'coach' || k === 'setup' || k === 'talk' || k === 'vs') v = v === 'true';
     SETTINGS[k] = v;
-    if (k === 'level') SETTINGS.cutoff = v === 'easy' ? 'middle' : 'corners';   // small fields use the middle infielders as cutoffs
     saveSettings();
     if (k === 'field') { G = makeGeo(SETTINGS.field); buildField(); CAM.want = fit(fullBounds(), { t: 0, b: 0, l: 0, r: 0 }); camStep(0, true); }
     // the clicked button is redrawn, so focus the new copy (the talk toggle flips its own value)
@@ -6444,7 +6449,7 @@ function showSettings() {
     <div class="srow"><span class="lab">Field</span>${seg('field', Object.values(FIELDS).map(f => [f.id, f.name, f.sub]))}</div>
     <div class="srow"><span class="lab">Level</span>${seg('level', [['easy', 'Easy', '12U · one relay man'], ['medium', 'Medium', '13–14U · more setups'], ['hard', 'Hard', 'HS · trailer, all 1st & 3rd']])}<p class="hint">${{ easy: 'Easy: one relay man (the other middle infielder covers second), the middle infielders as cutoffs (on a single to left or right with a play at the plate, the third or first baseman cuts it), and basic setups: normal, double-play depth, infield in, corners in, pull hitters, deep or shallow outfield, and the 12U shallow right fielder.', medium: 'Medium adds halfway, runner speed, early or late swings, no-doubles, and the outfield in for the winning run.', hard: 'Hard adds a trailer behind the relay man who calls the base, and the throw-through and back-to-the-pitcher first-and-third looks.' }[SETTINGS.level || 'easy']}</p></div>
     <div class="srow"><span class="lab">Play speed</span>${seg('speed', [[1, 'Game', '1×'], [0.75, 'Brisk', '0.75×'], [0.5, 'Learning', '0.5×'], [0.35, 'Slow', '0.35×']])}</div>
-    <div class="srow"><span class="lab">Cutoff on throws home</span>${seg('cutoff', [['middle', 'Middle infielders', 'SS and 2B (small-field version)'], ['corners', 'Corner infielders', '3B from left, 1B from center and right']])}</div>
+    <div class="srow"><span class="lab">Cutoff on throws home</span>${seg('cutoff', [['middle', 'Middle infielders', 'SS and 2B (default). On a single to left or right the SS or 2B chased it, so 3B or 1B cuts'], ['corners', 'Corner infielders', '3B from left, 1B from center and right']])}</div>
     <div class="srow"><span class="lab">Pre-pitch setup</span>${seg('setup', [['true', 'On', 'move to your starting spot before every pitch'], ['false', 'Off', 'start already in position']])}</div>
     <div class="srow"><span class="lab">Decision clock</span>${seg('clock', [[0, 'Off', 'think it through'], [5, '5 seconds', ''], [3, '3 seconds', '']])}</div>
     <div class="srow"><span class="lab">Your fielder throws</span>${seg('hand', [['R', 'Right-handed', 'glove on the left'], ['L', 'Left-handed', 'glove on the right']])}</div>
